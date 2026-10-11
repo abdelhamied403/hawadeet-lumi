@@ -1,0 +1,14 @@
+{
+  "name": "veogen",
+  "private": true,
+  "scripts": {
+    "server": "bun run --cwd apps/server server",
+    "web:dev": "bun run --cwd apps/web dev",
+    "web:build": "bun run --cwd apps/web build",
+    "mobile:start": "bun run --cwd apps/mobile start",
+    "mobile:apk": "cd apps/mobile/android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a",
+    "facebook-connect": "bun run --cwd apps/server facebook-connect",
+    "typecheck": "(cd apps/server && bunx tsc --noEmit) && (cd apps/web && bunx tsc --noEmit) && (cd apps/mobile && bunx tsc --noEmit)",
+    "install:all": "(cd apps/server && bun install) && (cd apps/web && bun install) && (cd apps/mobile && bun install)"
+  }
+}
