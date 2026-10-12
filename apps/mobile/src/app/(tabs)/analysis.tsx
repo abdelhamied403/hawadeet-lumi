@@ -175,7 +175,7 @@ function ReelCard({ reel, before }: { reel: ReelReport; before?: ReelReport }) {
             <Change value={reel.plays} before={before?.plays} />
           </Stat>
           <Stat label="Average watch" value={`${reel.averageWatchSeconds.toFixed(1)} s`} />
-          <Stat label="Reached the end" value={reachedEnd} />
+          <Stat label="Reached end" value={reachedEnd} />
         </View>
         <View className="flex-row gap-3">
           <Stat label="Reactions" value={count(reel.reactions)} />
