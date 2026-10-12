@@ -13,7 +13,7 @@ import {
   slugify,
   type JobStatus,
 } from "../services/kaggle";
-import { buildImagePrompt } from "../schemas/story";
+import { buildImagePrompt, NARRATOR, type Scene } from "../schemas/story";
 import { loadSceneVoice } from "./voice";
 
 export const MOTION_MODELS = ["wan5b", "wan14b"] as const;
@@ -29,6 +29,9 @@ const CLIP_MARGIN_SECONDS = 0.25;
 const DEFAULT_SCENE_SECONDS = 5;
 // Width each motion model renders at (must match MODELS in kaggle/render.py).
 const CLIP_WIDTH: Record<MotionModel, number> = { wan5b: 704, wan14b: 480 };
+
+// Kaggle rejects job sources over 1 MB; lip-sync voices are only sent while the job stays under this.
+const MAX_SOURCE_BYTES = 950_000;
 
 const jobSchema = z.object({
   slug: z.string(),
@@ -49,14 +52,43 @@ export type PushRenderOptions = {
   clipSeedBump?: number;
   // Names the job (and its record under jobs/); defaults to the model.
   jobName?: string;
+  // Redraw the mouth of whoever speaks on screen to match their voice, after the clips are made.
+  lipSync?: boolean;
 };
+
+// Who is seen saying their line in the scene, or null when lip sync does not apply: nobody speaks aloud,
+// more than one person does, or the speaker is not the one person in the picture.
+function speakerOnScreen(scene: Scene): string | null {
+  const aloud = [...new Set(scene.lines.filter((line) => line.speaker !== NARRATOR).map((line) => line.speaker))];
+  if (aloud.length !== 1 || scene.shows?.length !== 1) return null;
+  return scene.shows[0] === aloud[0] ? (aloud[0] ?? null) : null;
+}
+
+// The scene's voice with everything but the on-screen speaker silenced, padded to the clip's length, as a small MP3.
+async function lipSyncAudio(dir: string, jobName: string, number: number, speaker: string, seconds: number): Promise<string | null> {
+  const voice = await loadSceneVoice(dir, number).catch(() => null);
+  if (!voice || !voice.words.some((word) => word.speaker === speaker)) return null;
+  const silenced = voice.words
+    .filter((word) => word.speaker !== speaker)
+    .map((word) => `volume=0:enable='between(t,${word.start.toFixed(3)},${word.end.toFixed(3)})'`);
+  const output = join(paths.workDir(dir, jobName), `${sceneName(number)}-lips.mp3`);
+  await mkdir(dirname(output), { recursive: true });
+  await ffmpeg([
+    "-i", paths.voiceAudio(dir, number),
+    "-af", [...silenced, `apad=whole_dur=${seconds.toFixed(3)}`].join(","),
+    "-t", seconds.toFixed(3),
+    "-ar", "16000", "-ac", "1", "-b:a", "16k",
+    output,
+  ]);
+  return Buffer.from(await Bun.file(output).arrayBuffer()).toString("base64");
+}
 
 export async function pushRender(dir: string, model: MotionModel, options: PushRenderOptions = {}): Promise<string> {
   const { username } = requireKaggle();
   const story = await loadStory(dir);
   const jobName = options.jobName ?? model;
 
-  const scenes = [];
+  const scenes: { index: number; imagePrompt: string; motionPrompt: string; seconds: number; imageSeed: number }[] = [];
   for (const [index, scene] of story.scenes.entries()) {
     const number = index + 1;
     if (options.scenes && !options.scenes.includes(number)) continue;
@@ -85,14 +117,33 @@ export async function pushRender(dir: string, model: MotionModel, options: PushR
     }
   }
 
-  const jobConfig = { model, seed: story.seed + (options.clipSeedBump ?? 0), scenes, stages: options.stages ?? ["images", "clips"] };
+  const stages = options.stages ?? ["images", "clips"];
+  const lipsync: { index: number; audio: string }[] = [];
+  if (options.lipSync && stages.includes("clips")) {
+    for (const scene of scenes) {
+      const speaker = speakerOnScreen(story.scenes[scene.index - 1]!);
+      const audio = speaker ? await lipSyncAudio(dir, jobName, scene.index, speaker, scene.seconds) : null;
+      if (audio) lipsync.push({ index: scene.index, audio });
+    }
+  }
+
   const template = await Bun.file(TEMPLATE_PATH).text();
   if (!template.includes(CONFIG_PLACEHOLDER) || !template.includes(IMAGES_PLACEHOLDER)) {
     throw new Error("kaggle/render.py is missing a placeholder");
   }
-  const code = template
-    .replace(CONFIG_PLACEHOLDER, Buffer.from(JSON.stringify(jobConfig)).toString("base64"))
-    .replace(IMAGES_PLACEHOLDER, JSON.stringify(images));
+  const build = () => {
+    const jobConfig = { model, seed: story.seed + (options.clipSeedBump ?? 0), scenes, stages, lipsync };
+    return template
+      .replace(CONFIG_PLACEHOLDER, Buffer.from(JSON.stringify(jobConfig)).toString("base64"))
+      .replace(IMAGES_PLACEHOLDER, JSON.stringify(images));
+  };
+  let code = build();
+  // The clips matter more than their lip sync: voices are dropped from the end until the job fits.
+  while (code.length > MAX_SOURCE_BYTES && lipsync.length > 0) {
+    lipsync.pop();
+    code = build();
+  }
+  if (lipsync.length > 0) console.log(`lip sync for scenes ${lipsync.map((item) => item.index).join(", ")}`);
 
   const title = `veogen ${basename(resolve(dir))} ${jobName}`;
   const response = await pushJob({ username, title, code });

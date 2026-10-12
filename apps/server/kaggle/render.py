@@ -1,7 +1,8 @@
-"""Veogen GPU job: one still image per scene (Z-Image-Turbo), then an image-to-video clip per scene.
+"""Veogen GPU job: one still image per scene (Z-Image-Turbo), then an image-to-video clip per scene,
+then lip sync (LatentSync) on the clips where someone speaks on screen.
 
 Runs as a Kaggle script on a 16 GB T4. The scene list is injected by src/stages/render.ts.
-Outputs: images/scene-XX.png, clips/scene-XX.mp4, timings.json
+Outputs: images/scene-XX.png, clips/scene-XX.mp4, raw/scene-XX.mp4 (a lip-synced clip before the sync), timings.json
 """
 
 import base64
@@ -23,6 +24,13 @@ SEED = int(CONFIG.get("seed", 1234))
 STAGES = CONFIG.get("stages") or ["images", "clips"]
 # Scene images sent along with the job (scene number -> base64 JPEG), used when only clips are wanted.
 IMAGES = json.loads(r'''__VEOGEN_IMAGES_JSON__'''.strip() or "{}")
+# Clips to lip-sync: [{"index": scene number, "audio": base64 MP3 of what is said aloud, as long as the clip}].
+LIPSYNC = CONFIG.get("lipsync") or []
+# The version of LatentSync this job was tested with.
+LIPSYNC_REPO = "https://github.com/bytedance/LatentSync"
+LIPSYNC_COMMIT = "a229c3948406bc2cf6eaf4873e662e70c6a04746"
+LIPSYNC_WEIGHTS = "ByteDance/LatentSync-1.5"
+LIPSYNC_FPS = 25
 
 OUT = "/kaggle/working" if os.path.isdir("/kaggle/working") else os.path.abspath("out")
 CACHE = "/tmp/hf"
@@ -55,9 +63,9 @@ def log(message):
     print(f"[veogen {time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
-def sh(command):
+def sh(command, cwd=None):
     log(f"$ {command}")
-    subprocess.run(command, shell=True, check=False)
+    return subprocess.run(command, shell=True, check=False, cwd=cwd).returncode
 
 
 def save_timings():
@@ -385,6 +393,71 @@ def generate_clips():
         save_timings()
 
 
+def sync_lips():
+    """Redraws the mouth of each listed clip to match its voice. A clip that cannot be synced stays as it was."""
+    done = {entry["scene"] for entry in timings.get("lipsync", [])}
+    todo = [item for item in LIPSYNC if item["index"] not in done and os.path.exists(clip_path(item))]
+    if not todo:
+        return
+    repo, venv, work = "/tmp/LatentSync", "/tmp/lipsync-env", "/tmp/lipsync"
+    python = f"{venv}/bin/python"
+    os.makedirs(work, exist_ok=True)
+    os.makedirs(os.path.join(OUT, "raw"), exist_ok=True)
+    # The motion models are no longer needed, and the disk is.
+    shutil.rmtree(CACHE, ignore_errors=True)
+
+    started = time.time()
+    if not os.path.exists(python):
+        sh(f"{sys.executable} -m pip install -q uv")
+        sh(f"rm -rf {repo} && git clone -q {LIPSYNC_REPO} {repo} && git -C {repo} checkout -q {LIPSYNC_COMMIT}")
+        # Its own Python and pinned packages, so nothing clashes with the notebook's.
+        sh(f"{sys.executable} -m uv venv {venv} --python 3.10")
+        installed = sh(f"{sys.executable} -m uv pip install -q --python {python} -r requirements.txt", cwd=repo)
+        fetched = sh(
+            f"{python} -c \"from huggingface_hub import hf_hub_download as d; "
+            f"[d('{LIPSYNC_WEIGHTS}', f, local_dir='{repo}/checkpoints') for f in ('latentsync_unet.pt', 'whisper/tiny.pt')]\""
+        )
+        if installed != 0 or fetched != 0:
+            log("lip sync could not be set up; the clips stay as they are")
+            timings["notes"].append("lip sync setup failed")
+            save_timings()
+            return
+    timings["notes"].append(f"lip sync set up in {round(time.time() - started)}s")
+
+    for item in todo:
+        number = item["index"]
+        clip = clip_path(item)
+        raw = os.path.join(OUT, "raw", os.path.basename(clip))
+        smooth = os.path.join(work, f"scene-{number:02d}-smooth.mp4")
+        audio = os.path.join(work, f"scene-{number:02d}.mp3")
+        synced = os.path.join(work, f"scene-{number:02d}-synced.mp4")
+        began = time.time()
+        if not os.path.exists(raw):
+            shutil.copyfile(clip, raw)
+        with open(audio, "wb") as handle:
+            handle.write(base64.b64decode(item["audio"]))
+        # LatentSync works at 25 fps and would repeat frames to get there; building the in-between frames keeps the motion even.
+        sh(
+            f"ffmpeg -y -loglevel error -i {raw} -vf minterpolate=fps={LIPSYNC_FPS}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1 "
+            f"-an -c:v libx264 -crf 14 -pix_fmt yuv420p {smooth}"
+        )
+        code = 1
+        if os.path.exists(smooth):
+            code = sh(
+                f"{python} -m scripts.inference --unet_config_path configs/unet/stage2.yaml "
+                f"--inference_ckpt_path checkpoints/latentsync_unet.pt --inference_steps 20 --guidance_scale 1.5 "
+                f"--video_path {smooth} --audio_path {audio} --video_out_path {synced}",
+                cwd=repo,
+            )
+        ok = code == 0 and os.path.exists(synced) and os.path.getsize(synced) > 10_000
+        if ok:
+            shutil.copyfile(synced, clip + ".partial")
+            os.replace(clip + ".partial", clip)
+        timings.setdefault("lipsync", []).append({"scene": number, "seconds": round(time.time() - began, 1), "synced": ok})
+        save_timings()
+        log(f"lip sync {number}: {'done' if ok else 'not possible, clip kept as it was'} in {round(time.time() - began)}s")
+
+
 def reuse_images():
     """Writes scene images that were sent along with the job, if every scene has one."""
     images = IMAGES
@@ -454,6 +527,10 @@ def main():
         log(f"clips process ended with code {code}; {clips_done()}/{len(SCENES)} clips")
         stalled = stalled + 1 if clips_done() == before else 0
 
+    if "clips" in STAGES and LIPSYNC and clips_done() == len(SCENES):
+        code = run_stage("lipsync")
+        log(f"lip sync process ended with code {code}")
+
     with open(TIMINGS_PATH) as handle:
         final = json.load(handle)
     final["total_seconds"] = round(time.time() - started, 1)
@@ -481,5 +558,7 @@ if STAGE == "images":
     generate_images()
 elif STAGE == "clips":
     generate_clips()
+elif STAGE == "lipsync":
+    sync_lips()
 else:
     main()

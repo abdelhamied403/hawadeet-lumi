@@ -203,6 +203,7 @@ async function startRender(episode: Episode, step: "images" | "clips", meta: Ste
       imageSeedBump: step === "images" ? meta.attempt : 0,
       clipSeedBump: step === "clips" ? meta.attempt : 0,
       reuseImagesFrom: step === "clips" ? MODEL : undefined,
+      lipSync: step === "clips",
     });
     // The clock for the estimate starts when the job is really on Kaggle, not while it was being prepared.
     updateStep(episode.id, step, { meta: { jobUrl, startedAt: new Date().toISOString() } });
