@@ -78,7 +78,8 @@ async function checkBatch(dir: string, story: Story, options: CheckOptions, numb
     const scene = story.scenes[number - 1]!;
     const place = story.places.find((candidate) => candidate.name === scene.place);
     const described = options.kind === "images" ? `Meant to show: ${scene.imagePrompt}` : `Meant to happen: ${scene.motionPrompt}`;
-    return `Picture ${position + 1} = scene ${number}. Spoken during it: ${spoken(story, number)}. ${described}${place ? ` The place: ${place.look}` : ""}`;
+    const props = story.props.filter((prop) => scene.props.includes(prop.name)).map((prop) => ` The ${prop.name}: ${prop.look}`);
+    return `Picture ${position + 1} = scene ${number}. Spoken during it: ${spoken(story, number)}. ${described}${place ? ` The place: ${place.look}` : ""}${props.join("")}`;
   });
 
   const subject =

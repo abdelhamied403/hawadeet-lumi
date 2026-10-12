@@ -154,10 +154,10 @@ async function writeStory(episode: Episode, meta: StepMeta): Promise<void> {
       number: other.partNumber,
       narration: (other.story?.scenes ?? []).map((scene) => scene.narration).join(" "),
     }));
-  // A series planned before places had fixed looks gets them once, and keeps them for every later part.
+  // A series planned before places and objects had fixed looks gets them once, and keeps them for every later part.
   let bible = series.bible;
   if (bible.places.length === 0) {
-    bible = { ...bible, places: await writePlaces(bible, previous, await publishedStills(series.id)) };
+    bible = { ...bible, ...(await writePlaces(bible, previous, await publishedStills(series.id))) };
     saveSeriesBible(series.id, bible);
   }
   const story = await writeSeriesPart({

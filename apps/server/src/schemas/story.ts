@@ -34,6 +34,13 @@ export const placeSchema = z.object({
   look: z.string().min(1),
 });
 
+export const propSchema = z.object({
+  // Short Latin name, used to point a scene at the object (e.g. "Padlock").
+  name: z.string().regex(/^[A-Za-z]+$/, "Use letters only, no spaces"),
+  // English: what the object looks like, added to every image it is in.
+  look: z.string().min(1),
+});
+
 export const sceneSchema = z
   .object({
     // Everything spoken in the scene, joined. Kept in step with `lines` automatically.
@@ -48,6 +55,8 @@ export const sceneSchema = z
     shows: z.array(z.string()).optional(),
     // Name of the place the image is set in; its fixed look is added to the image prompt. Older stories have none.
     place: z.string().nullable().default(null),
+    // Names of the story's recurring objects visible in the image; their fixed looks are added to the image prompt.
+    props: z.array(z.string()).default([]),
     // English prompt describing how the image should move.
     motionPrompt: z.string().min(1),
     // Name of a sound effect from assets/sfx played in this scene, if any.
@@ -73,6 +82,8 @@ export const storySchema = z.object({
   cast: z.array(castMemberSchema).default([]),
   // The places the story happens in, each with one fixed look.
   places: z.array(placeSchema).default([]),
+  // Objects the characters handle or look at in more than one scene, each with one fixed look.
+  props: z.array(propSchema).default([]),
   scenes: z.array(sceneSchema).min(1),
 });
 
@@ -91,7 +102,11 @@ export function buildImagePrompt(story: Story, scene: Scene): string {
       })
     : [story.characterSheet];
   const place = story.places.find((candidate) => candidate.name === scene.place);
-  return [scene.imagePrompt, place ? `The place: ${place.look}` : "", ...looks, story.styleSheet]
+  const props = scene.props.map((name) => {
+    const prop = story.props.find((candidate) => candidate.name === name);
+    return prop ? `The ${spokenName(prop.name).toLowerCase()}: ${prop.look}` : "";
+  });
+  return [scene.imagePrompt, place ? `The place: ${place.look}` : "", ...props, ...looks, story.styleSheet]
     .filter(Boolean)
     .map((part) => part.trim().replace(/\.$/, ""))
     .join(". ");
@@ -99,6 +114,7 @@ export function buildImagePrompt(story: Story, scene: Scene): string {
 
 export type Line = z.infer<typeof lineSchema>;
 export type Place = z.infer<typeof placeSchema>;
+export type Prop = z.infer<typeof propSchema>;
 export type CastMember = z.infer<typeof castMemberSchema>;
 export type Scene = z.infer<typeof sceneSchema>;
 export type Story = z.infer<typeof storySchema>;

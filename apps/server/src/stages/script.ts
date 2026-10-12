@@ -1,6 +1,6 @@
 import { saveStory } from "../lib/project";
 import { writeJson } from "../lib/story-model";
-import { HERO, NARRATOR, storySchema, type CastMember, type Place, type Story } from "../schemas/story";
+import { HERO, NARRATOR, storySchema, type CastMember, type Place, type Prop, type Story } from "../schemas/story";
 
 const MAX_ATTEMPTS = 3;
 // A motion clip lasts about five seconds, so each scene's narration has to be speakable in that time.
@@ -31,6 +31,7 @@ export const SCENE_RULES = `Rules for every scene:
   4. What is behind and around them, taken from the place, with the same doors, walls and objects in the same state as the story left them. Say of every door in the frame whether it is shut or open: a door that is locked in the story is shut in every picture.
   5. The light: its source, its colour, where the shadows fall.
   Do NOT describe anyone's face, hair, age or clothes: each person's fixed look is added automatically from "shows". Describe only what IS in the picture, never what is absent, and nothing the story has not revealed yet. What a character sees through a peephole, a keyhole or a gap is described as concretely as any other picture: the actual room, the actual thing in it. Never ask for text, captions or logos in the image.
+- "props": the recurring objects visible in that image, as a list of their exact names from the list of recurring objects below; [] when none of them is in frame.
 - "shows": the people visible in that image, as a list: "${HERO}" for the main character, plus the exact name of any other character. Only people really in frame: a close-up of an object, a hand, feet or a door is []. Most images show ONE person.
 - "motionPrompt" (ENGLISH, 30 to 60 words): what happens during the 5 seconds, taken from the line: the ONE physical action the line describes, from its start to its end ("the young man takes two slow steps toward the door and stops with his hand an inch from the wood"), naming who or what does it ("the young man", "the padlock", never "he"). When someone says the line aloud, they are seen saying it. It must start from the image as described, involve only what is in that image, and be physically plausible. The camera is fixed or pushes in very slowly: no pans, tilts or orbits, and nothing new comes into view.
 - Psychological, eerie horror: no gore, no harm to children, no real people, places or brands.`;
@@ -50,10 +51,17 @@ Dialogue rules:
 - In a scene where a character speaks, the image shows that character: name them in the imagePrompt with their name written as words (e.g. "Amm Ahmed") and list them in "shows".`;
 }
 
-export function placeRules(places: Place[]): string {
-  if (places.length === 0) return "";
-  return `Places, using exactly these names in "place". Each keeps this one look in every image set there:
-${places.map((place) => `- "${place.name}": ${place.look}`).join("\n")}`;
+export function placeRules(places: Place[], props: Prop[] = []): string {
+  const parts: string[] = [];
+  if (places.length > 0) {
+    parts.push(`Places, using exactly these names in "place". Each keeps this one look in every image set there:
+${places.map((place) => `- "${place.name}": ${place.look}`).join("\n")}`);
+  }
+  if (props.length > 0) {
+    parts.push(`Recurring objects, using exactly these names in "props". Each keeps this one look in every image it is in, so the imagePrompt says where it is and what state it is in, never what it looks like:
+${props.map((prop) => `- "${prop.name}": ${prop.look}`).join("\n")}`);
+  }
+  return parts.join("\n");
 }
 
 export function wordCount(text: string): number {
@@ -81,6 +89,8 @@ export function storyProblem(story: Story, scenes: number): string | null {
   if (thin >= 0) return `the "imagePrompt" of scene ${thin + 1} is under ${MIN_WORDS_IMAGE} words; every one needs the shot, the pose, the object and its state, the surroundings and the light`;
   const nowhere = story.scenes.find((scene) => scene.place && !story.places.some((place) => place.name === scene.place));
   if (nowhere) return `unknown place "${nowhere.place}"`;
+  const stray = story.scenes.flatMap((scene) => scene.props).find((name) => !story.props.some((prop) => prop.name === name));
+  if (stray) return `unknown object "${stray}" in "props"`;
   if (story.cast.length > 0) {
     const spoken = story.scenes.filter((scene) => scene.lines.some((line) => line.speaker !== NARRATOR)).length;
     if (spoken < story.scenes.length * MIN_DIALOGUE_SHARE) return `only ${spoken} of ${story.scenes.length} scenes have dialogue`;
@@ -115,7 +125,7 @@ Return ONLY JSON with this shape:
   "characterSheet": "...",
   "styleSheet": "...",
   "places": [{ "name": "Corridor", "look": "..." }],
-  "scenes": [{ "lines": [{ "speaker": "Narrator", "text": "..." }], "place": "Corridor", "imagePrompt": "...", "shows": ["Hero"], "motionPrompt": "..." }]
+  "scenes": [{ "lines": [{ "speaker": "Narrator", "text": "..." }], "place": "Corridor", "props": [], "imagePrompt": "...", "shows": ["Hero"], "motionPrompt": "..." }]
 }
 with exactly ${scenes} scenes.`;
 }
