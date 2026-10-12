@@ -1,4 +1,6 @@
+import { format } from "date-fns";
 import { getPageSummary, getReelInsights, listPagePosts, listPageReels, type PageAccess } from "../services/facebook";
+import { getChannelStats, getVideoWatchStats, listChannelVideos } from "../services/youtube";
 
 export type ReelReport = {
   id: string;
@@ -30,12 +32,68 @@ export type PostReport = {
   shares: number;
 };
 
-// The Page's numbers at one moment. Reports are kept, so two of them show what changed in between.
+export type YoutubeVideoReport = {
+  id: string;
+  title: string;
+  publishedAt: string;
+  lengthSeconds: number;
+  url: string;
+  views: number;
+  likes: number;
+  comments: number;
+  // Null until YouTube's watch-time numbers reach this video (a day or two), or when they cannot be read.
+  averageWatchSeconds: number | null;
+  averageWatchedShare: number | null;
+  subscribersGained: number | null;
+};
+
+export type YoutubeReport = {
+  channel: { title: string; subscribers: number; views: number };
+  // Newest first.
+  videos: YoutubeVideoReport[];
+  // Why watch time is missing, when it could not be read at all.
+  watchTimeProblem: string | null;
+};
+
+// The Page's and the channel's numbers at one moment. Reports are kept, so two of them show what changed in between.
 export type ReportData = {
   page: { name: string; followers: number; likes: number };
   reels: ReelReport[];
   posts: PostReport[];
+  // Missing in reports taken before the channel was connected, or when YouTube could not be read.
+  youtube?: YoutubeReport;
 };
+
+// Reads the connected channel's current numbers from YouTube.
+export async function collectYoutube(accessToken: string): Promise<YoutubeReport> {
+  const channel = await getChannelStats(accessToken);
+  const videos = await listChannelVideos({ accessToken, uploadsPlaylistId: channel.uploadsPlaylistId });
+  let watchTimeProblem: string | null = null;
+  const oldest = videos.map((video) => video.publishedAt).sort()[0];
+  const watch = await getVideoWatchStats({
+    accessToken,
+    videoIds: videos.map((video) => video.id),
+    startDate: format(oldest ? new Date(oldest) : new Date(), "yyyy-MM-dd"),
+    endDate: format(new Date(), "yyyy-MM-dd"),
+  }).catch((error) => {
+    watchTimeProblem = error instanceof Error ? error.message.slice(0, 200) : String(error);
+    return {} as Awaited<ReturnType<typeof getVideoWatchStats>>;
+  });
+  return {
+    channel: { title: channel.title, subscribers: channel.subscribers, views: channel.views },
+    videos: videos
+      .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt))
+      .map((video) => ({
+        ...video,
+        averageWatchSeconds: watch[video.id]?.averageWatchSeconds ?? null,
+        averageWatchedShare: watch[video.id]?.averageWatchedShare ?? null,
+        subscribersGained: watch[video.id]?.subscribersGained ?? null,
+      })),
+    watchTimeProblem,
+  };
+}
+
+export const youtubeViews = (report: ReportData) => (report.youtube?.videos ?? []).reduce((sum, video) => sum + video.views, 0);
 
 const EXCERPT_LENGTH = 90;
 
@@ -85,6 +143,12 @@ export function summarizeReport(report: ReportData, before: ReportData | null): 
   const lines = [
     `${report.page.followers} followers${before ? ` (${signed(report.page.followers - before.page.followers)})` : ""}, ${totalPlays(report)} reel plays${before ? ` (${signed(totalPlays(report) - totalPlays(before))})` : ""}.`,
   ];
+  if (report.youtube) {
+    const earlier = before?.youtube;
+    lines.push(
+      `YouTube: ${report.youtube.channel.subscribers} subscribers${earlier ? ` (${signed(report.youtube.channel.subscribers - earlier.channel.subscribers)})` : ""}, ${youtubeViews(report)} views${before && earlier ? ` (${signed(youtubeViews(report) - youtubeViews(before))})` : ""}.`,
+    );
+  }
   const newest = report.reels[0];
   if (newest) lines.push(`Newest reel: ${newest.plays} plays, ${newest.averageWatchSeconds.toFixed(1)}s average watch, ${newest.reactions} reactions.`);
   return lines.join("\n");

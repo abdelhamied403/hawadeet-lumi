@@ -1,5 +1,5 @@
 import { isAxiosError } from "axios";
-import { googleAuthHttp, uploadHttp, youtubeHttp } from "../lib/http";
+import { googleAuthHttp, uploadHttp, youtubeAnalyticsHttp, youtubeHttp } from "../lib/http";
 
 export type YoutubeClient = { clientId: string; clientSecret: string };
 
@@ -128,6 +128,125 @@ export async function uploadVideo(payload: UploadVideoPayload): Promise<UploadVi
       headers: { Authorization: `Bearer ${payload.accessToken}`, "Content-Type": "video/mp4" },
     });
     return { videoId: sent.data.id, url: `https://www.youtube.com/watch?v=${sent.data.id}`, privacy: sent.data.status?.privacyStatus ?? "private" };
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type ChannelStats = {
+  title: string;
+  subscribers: number;
+  views: number;
+  // The playlist that holds every upload of the channel.
+  uploadsPlaylistId: string;
+};
+
+// The connected channel's audience and total views.
+export async function getChannelStats(accessToken: string): Promise<ChannelStats> {
+  try {
+    const response = await youtubeHttp.get<{
+      items?: { snippet: { title: string }; statistics: { subscriberCount?: string; viewCount?: string }; contentDetails: { relatedPlaylists: { uploads: string } } }[];
+    }>("/youtube/v3/channels", {
+      params: { part: "snippet,statistics,contentDetails", mine: true },
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const channel = response.data.items?.[0];
+    if (!channel) throw new Error("This Google account has no YouTube channel");
+    return {
+      title: channel.snippet.title,
+      subscribers: Number(channel.statistics.subscriberCount ?? 0),
+      views: Number(channel.statistics.viewCount ?? 0),
+      uploadsPlaylistId: channel.contentDetails.relatedPlaylists.uploads,
+    };
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type ChannelVideo = {
+  id: string;
+  title: string;
+  publishedAt: string;
+  lengthSeconds: number;
+  url: string;
+  views: number;
+  likes: number;
+  comments: number;
+};
+
+// "PT1M2S" -> 62
+function isoSeconds(duration: string): number {
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(duration);
+  return match ? Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0) : 0;
+}
+
+// The channel's newest uploads (up to 50) with their public counts.
+export async function listChannelVideos(payload: { accessToken: string; uploadsPlaylistId: string }): Promise<ChannelVideo[]> {
+  try {
+    const headers = { Authorization: `Bearer ${payload.accessToken}` };
+    const uploads = await youtubeHttp.get<{ items?: { contentDetails: { videoId: string } }[] }>("/youtube/v3/playlistItems", {
+      params: { part: "contentDetails", playlistId: payload.uploadsPlaylistId, maxResults: 50 },
+      headers,
+    });
+    const ids = (uploads.data.items ?? []).map((item) => item.contentDetails.videoId);
+    if (ids.length === 0) return [];
+    const videos = await youtubeHttp.get<{
+      items?: {
+        id: string;
+        snippet: { title: string; publishedAt: string };
+        contentDetails: { duration: string };
+        statistics: { viewCount?: string; likeCount?: string; commentCount?: string };
+      }[];
+    }>("/youtube/v3/videos", { params: { part: "snippet,contentDetails,statistics", id: ids.join(","), maxResults: 50 }, headers });
+    return (videos.data.items ?? []).map((video) => ({
+      id: video.id,
+      title: video.snippet.title,
+      publishedAt: video.snippet.publishedAt,
+      lengthSeconds: isoSeconds(video.contentDetails.duration),
+      url: `https://www.youtube.com/watch?v=${video.id}`,
+      views: Number(video.statistics.viewCount ?? 0),
+      likes: Number(video.statistics.likeCount ?? 0),
+      comments: Number(video.statistics.commentCount ?? 0),
+    }));
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type VideoWatchStats = {
+  averageWatchSeconds: number;
+  // Average share of the video that was watched, 0 to 1.
+  averageWatchedShare: number;
+  subscribersGained: number;
+};
+
+export type VideoWatchPayload = {
+  accessToken: string;
+  videoIds: string[];
+  // Both yyyy-MM-dd.
+  startDate: string;
+  endDate: string;
+};
+
+// Watch time per video over a date range, keyed by video id. YouTube's own numbers run a day or two behind,
+// so a new video is missing until they catch up. Needs the yt-analytics.readonly permission.
+export async function getVideoWatchStats(payload: VideoWatchPayload): Promise<Record<string, VideoWatchStats>> {
+  if (payload.videoIds.length === 0) return {};
+  try {
+    const response = await youtubeAnalyticsHttp.get<{ rows?: [string, number, number, number][] }>("/v2/reports", {
+      params: {
+        ids: "channel==MINE",
+        startDate: payload.startDate,
+        endDate: payload.endDate,
+        dimensions: "video",
+        metrics: "averageViewDuration,averageViewPercentage,subscribersGained",
+        filters: `video==${payload.videoIds.join(",")}`,
+      },
+      headers: { Authorization: `Bearer ${payload.accessToken}` },
+    });
+    return Object.fromEntries(
+      (response.data.rows ?? []).map(([id, seconds, percentage, gained]) => [id, { averageWatchSeconds: seconds, averageWatchedShare: percentage / 100, subscribersGained: gained }]),
+    );
   } catch (error) {
     throw describeError(error);
   }

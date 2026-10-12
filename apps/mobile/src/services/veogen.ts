@@ -384,22 +384,49 @@ export type PostReport = {
   shares: number;
 };
 
-// The Page's numbers as they stood at one moment.
+export type YoutubeVideoReport = {
+  id: string;
+  title: string;
+  publishedAt: string;
+  lengthSeconds: number;
+  url: string;
+  views: number;
+  likes: number;
+  comments: number;
+  // Null until YouTube's watch-time numbers reach this video (a day or two), or when they cannot be read.
+  averageWatchSeconds: number | null;
+  // Average share of the video that was watched, 0 to 1.
+  averageWatchedShare: number | null;
+  subscribersGained: number | null;
+};
+
+export type YoutubeReport = {
+  channel: { title: string; subscribers: number; views: number };
+  // Newest first.
+  videos: YoutubeVideoReport[];
+  // Why watch time is missing, when it could not be read at all.
+  watchTimeProblem: string | null;
+};
+
+// The Page's and the channel's numbers as they stood at one moment.
 export type Report = {
   id: number;
   takenAt: string;
   page: { name: string; followers: number; likes: number };
   reels: ReelReport[];
   posts: PostReport[];
+  // Missing in reports taken before the channel was connected.
+  youtube?: YoutubeReport;
 };
 
 export type AnalysisResponse = {
   facebookConnected: boolean;
+  youtubeConnected: boolean;
   latest: Report | null;
   // The report from about a day before the latest, to show what changed.
   dayBefore: Report | null;
   // One point per kept report, oldest first.
-  history: { takenAt: string; followers: number; plays: number }[];
+  history: { takenAt: string; followers: number; plays: number; subscribers: number | null; youtubeViews: number | null }[];
 };
 
 export type TestAlertResponse = { sent: boolean };

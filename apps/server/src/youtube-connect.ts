@@ -6,8 +6,12 @@ import { exchangeCode, getOwnChannel } from "./services/youtube";
 const ENV_PATH = ".env";
 const PORT = 4519;
 const REDIRECT = `http://127.0.0.1:${PORT}/callback`;
-// Upload videos, and read the channel's name to confirm which one was connected.
-const SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"];
+// Upload videos, read the channel and its videos' counts, and read watch time for the Analysis tab.
+const SCOPES = [
+  "https://www.googleapis.com/auth/youtube.upload",
+  "https://www.googleapis.com/auth/youtube.readonly",
+  "https://www.googleapis.com/auth/yt-analytics.readonly",
+];
 
 const { YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET } = process.env;
 if (!YOUTUBE_CLIENT_ID || !YOUTUBE_CLIENT_SECRET) {

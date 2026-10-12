@@ -5,7 +5,7 @@ import { paths, saveStory } from "../lib/project";
 import { publishPagePost, publishReel } from "../services/facebook";
 import { sendAlert, type SendAlertPayload } from "../services/ntfy";
 import { refreshAccessToken, uploadVideo } from "../services/youtube";
-import { collectReport, summarizeReport } from "../stages/analytics";
+import { collectReport, collectYoutube, summarizeReport } from "../stages/analytics";
 import { runFullStory } from "../stages/fullstory";
 import { runAssemble } from "../stages/assemble";
 import { SFX_CREDITS } from "../stages/sfx";
@@ -404,7 +404,16 @@ let lastReportFailure = 0;
 // Records the Page's numbers now. Kept so that later reports can be compared with this one.
 export async function takeReport(): Promise<Report> {
   if (!config.FACEBOOK_PAGE_ID || !config.FACEBOOK_PAGE_TOKEN) throw new Error("Facebook is not connected yet (see Settings)");
-  return saveReport(await collectReport({ pageId: config.FACEBOOK_PAGE_ID, pageToken: config.FACEBOOK_PAGE_TOKEN }));
+  const data = await collectReport({ pageId: config.FACEBOOK_PAGE_ID, pageToken: config.FACEBOOK_PAGE_TOKEN });
+  // A problem on YouTube's side must not cost the Facebook half of the report.
+  if (youtubeConnected) {
+    try {
+      data.youtube = await collectYoutube(await youtubeAccessToken());
+    } catch (error) {
+      console.error(`report without YouTube: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  return saveReport(data);
 }
 
 async function ensureReport(): Promise<void> {
@@ -515,16 +524,20 @@ export async function buildDescription(episode: Episode): Promise<string> {
 
 export const youtubeConnected = Boolean(config.YOUTUBE_CLIENT_ID && config.YOUTUBE_CLIENT_SECRET && config.YOUTUBE_REFRESH_TOKEN);
 
-// Uploads a finished video to the connected YouTube channel. A vertical video under three minutes becomes a Short.
-async function uploadToYoutube(video: { path: string; title: string; description: string; hashtags: string[] }) {
+// A short-lived token for the connected channel. A function declaration, so the report code above can use it.
+async function youtubeAccessToken(): Promise<string> {
   if (!config.YOUTUBE_CLIENT_ID || !config.YOUTUBE_CLIENT_SECRET || !config.YOUTUBE_REFRESH_TOKEN) throw new Error("YouTube is not connected yet (see Settings)");
-  const accessToken = await refreshAccessToken({
+  return refreshAccessToken({
     clientId: config.YOUTUBE_CLIENT_ID,
     clientSecret: config.YOUTUBE_CLIENT_SECRET,
     refreshToken: config.YOUTUBE_REFRESH_TOKEN,
   });
+}
+
+// Uploads a finished video to the connected YouTube channel. A vertical video under three minutes becomes a Short.
+async function uploadToYoutube(video: { path: string; title: string; description: string; hashtags: string[] }) {
   const uploaded = await uploadVideo({
-    accessToken,
+    accessToken: await youtubeAccessToken(),
     videoPath: video.path,
     title: video.title,
     description: video.description,

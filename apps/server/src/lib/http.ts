@@ -48,3 +48,6 @@ export const googleAuthHttp = axios.create({ baseURL: "https://oauth2.googleapis
 
 // YouTube Data API. The access token is passed per request; video bytes go through uploadHttp.
 export const youtubeHttp = axios.create({ baseURL: "https://www.googleapis.com", timeout: 60_000 });
+
+// YouTube Analytics API (watch time per video). Needs the yt-analytics.readonly permission.
+export const youtubeAnalyticsHttp = axios.create({ baseURL: "https://youtubeanalytics.googleapis.com", timeout: 60_000 });

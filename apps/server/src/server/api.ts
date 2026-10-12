@@ -11,7 +11,7 @@ import { SFX } from "../stages/sfx";
 import { seriesBibleSchema } from "../stages/series";
 import { authEnabled, login, loginSchema, logout, mediaToken, requireMediaAccess, requireSession, signedIn } from "./auth";
 import { estimateStep } from "./estimates";
-import { totalPlays } from "../stages/analytics";
+import { totalPlays, youtubeViews } from "../stages/analytics";
 import { AI_NOTE, POST_TEXT_MAX } from "../stages/posts";
 import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, uploadFullStory, youtubeConnected, createNextEpisode, draftPost, MODEL, publishEpisode, publishPost, rejectStep, rewritePost, takeReport, tick, uploadEpisodeToYoutube } from "./engine";
 import {
@@ -428,10 +428,17 @@ function analysis() {
   const latest = reports[0] ?? null;
   return {
     facebookConnected: Boolean(config.FACEBOOK_PAGE_ID && config.FACEBOOK_PAGE_TOKEN),
+    youtubeConnected,
     latest,
     dayBefore: latest ? reportBefore(new Date(new Date(latest.takenAt).getTime() - 23 * 3_600_000)) : null,
     history: reports
-      .map((report) => ({ takenAt: report.takenAt, followers: report.page.followers, plays: totalPlays(report) }))
+      .map((report) => ({
+        takenAt: report.takenAt,
+        followers: report.page.followers,
+        plays: totalPlays(report),
+        subscribers: report.youtube?.channel.subscribers ?? null,
+        youtubeViews: report.youtube ? youtubeViews(report) : null,
+      }))
       .reverse(),
   };
 }
