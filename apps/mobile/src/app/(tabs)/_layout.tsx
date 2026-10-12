@@ -3,8 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Tabs } from "expo-router";
 import { getOverview } from "@/services/veogen";
 
-const ICONS = { index: "film", posts: "message-square", series: "book-open", settings: "sliders" } as const;
-const TITLES = { index: "Desk", posts: "Posts", series: "Series", settings: "Settings" } as const;
+const ICONS = { index: "film", posts: "message-square", analysis: "activity", series: "book-open", settings: "sliders" } as const;
+const TITLES = { index: "Desk", posts: "Posts", analysis: "Analysis", series: "Series", settings: "Settings" } as const;
 
 export default function TabsLayout() {
   // Shares the Desk's query, so the count costs no extra request.
@@ -28,6 +28,7 @@ export default function TabsLayout() {
     >
       <Tabs.Screen name="index" />
       <Tabs.Screen name="posts" />
+      <Tabs.Screen name="analysis" />
       <Tabs.Screen name="series" />
       <Tabs.Screen name="settings" />
     </Tabs>

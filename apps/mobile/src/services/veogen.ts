@@ -133,7 +133,26 @@ export type SeriesDetail = {
   cast: CastMember[];
   parts: { number: number; summary: string; cliffhanger: string }[];
   episodes: EpisodeSummary[];
+  fullStory: FullStory;
 };
+
+// Every published part joined into one video, for YouTube.
+export type FullStory = {
+  publishedParts: number[];
+  // True while the server is putting the video together.
+  building: boolean;
+  videoUrl: string | null;
+  // The parts the video on the server holds; fewer than `publishedParts` means it is out of date.
+  includedParts: number[];
+  builtAt: string | null;
+  title: string;
+  description: string;
+  // Where it was uploaded, once the link is saved.
+  youtubeUrl: string | null;
+};
+
+// An empty link clears the saved one.
+export type SaveFullStoryLinkPayload = { url: string };
 
 export type UpdateSeriesPayload = {
   title: string;
@@ -164,10 +183,16 @@ export type Settings = {
   partsPerSeries: number;
   // Page posts drafted each day; 0 turns them off.
   postsPerDay: number;
+  // The YouTube channel viewers are sent to for the whole story; empty leaves that line out.
+  youtubeUrl: string;
+  // Send alerts to the owner's phone.
+  notifications: boolean;
 };
 
 export type SettingsResponse = Settings & {
-  connections: { kaggle: boolean; gemini: boolean; facebook: boolean };
+  connections: { kaggle: boolean; gemini: boolean; facebook: boolean; alerts: boolean };
+  // What the ntfy app subscribes to; null until the server has a topic.
+  alertsTopic: { server: string; topic: string } | null;
 };
 
 export type SessionResponse = {
@@ -206,6 +231,15 @@ export async function getSeries(id: number): Promise<SeriesDetail> {
 
 export async function updateSeries(id: number, payload: UpdateSeriesPayload): Promise<SeriesDetail> {
   return (await veogenHttp.put<SeriesDetail>(`/api/series/${id}`, payload)).data;
+}
+
+// Starts joining the published parts into one video; the series reports `building` until it is there.
+export async function buildFullStory(id: number): Promise<SeriesDetail> {
+  return (await veogenHttp.post<SeriesDetail>(`/api/series/${id}/full-story`)).data;
+}
+
+export async function saveFullStoryLink(id: number, payload: SaveFullStoryLinkPayload): Promise<SeriesDetail> {
+  return (await veogenHttp.put<SeriesDetail>(`/api/series/${id}/full-story`, payload)).data;
 }
 
 export async function getEpisode(id: number): Promise<EpisodeDetail> {
@@ -302,4 +336,69 @@ export async function publishPost(id: number): Promise<PagePost> {
 
 export async function discardPost(id: number): Promise<PagePost> {
   return (await veogenHttp.post<PagePost>(`/api/posts/${id}/discard`)).data;
+}
+
+export type ReelReport = {
+  id: string;
+  title: string;
+  publishedAt: string;
+  lengthSeconds: number;
+  url: string;
+  plays: number;
+  replays: number;
+  averageWatchSeconds: number;
+  totalWatchSeconds: number;
+  reactions: number;
+  comments: number;
+  // People who followed the Page from this Reel.
+  follows: number;
+  // Share of viewers still watching at evenly spaced points from start to end, 0 to 1.
+  retention: number[];
+};
+
+export type PostReport = {
+  id: string;
+  publishedAt: string;
+  excerpt: string;
+  kind: "text" | "photo";
+  url: string;
+  // Times the post appeared on someone's screen.
+  views: number;
+  clicks: number;
+  reactions: number;
+  comments: number;
+  shares: number;
+};
+
+// The Page's numbers as they stood at one moment.
+export type Report = {
+  id: number;
+  takenAt: string;
+  page: { name: string; followers: number; likes: number };
+  reels: ReelReport[];
+  posts: PostReport[];
+};
+
+export type AnalysisResponse = {
+  facebookConnected: boolean;
+  latest: Report | null;
+  // The report from about a day before the latest, to show what changed.
+  dayBefore: Report | null;
+  // One point per kept report, oldest first.
+  history: { takenAt: string; followers: number; plays: number }[];
+};
+
+export type TestAlertResponse = { sent: boolean };
+
+export async function getAnalysis(): Promise<AnalysisResponse> {
+  return (await veogenHttp.get<AnalysisResponse>("/api/analysis")).data;
+}
+
+// Records the Page's numbers now, instead of waiting for the next scheduled report.
+export async function refreshAnalysis(): Promise<AnalysisResponse> {
+  return (await veogenHttp.post<AnalysisResponse>("/api/analysis/refresh")).data;
+}
+
+export async function sendTestAlert(): Promise<TestAlertResponse> {
+  return (await veogenHttp.post<TestAlertResponse>("/api/alerts/test")).data;
 }

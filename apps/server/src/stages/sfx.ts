@@ -45,6 +45,7 @@ ${JSON.stringify(scenes)}
 
 For each scene choose ONE effect, or null.
 - Use an effect only where that sound actually happens in the scene (someone knocks, a door moves, something is dragged, he is terrified…).
+- Scene 1 always gets the effect that fits it best: the first second needs a sound that stops someone scrolling.
 - Between a third and a half of the scenes get an effect; the rest are null. Silence is part of horror.
 - "stinger" at most twice, on the biggest shocks. Do not use the same effect in two scenes in a row.
 

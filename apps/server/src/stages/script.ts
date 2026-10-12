@@ -6,6 +6,16 @@ const MAX_ATTEMPTS = 3;
 // A motion clip lasts about five seconds, so each scene's narration has to be speakable in that time.
 export const MAX_WORDS_PER_SCENE = 9;
 
+// The first line has to land before a scrolling viewer leaves, so it is shorter than the others.
+export const MAX_WORDS_OPENING = 6;
+
+export const OPENING_RULES = `The opening decides everything. Most viewers are strangers scrolling past who have seen no other part, and they leave within three seconds unless something is already wrong on screen.
+- Scene 1 is a cold open INSIDE the first frightening moment: its image is a close shot of the one thing that should not be there or should not be happening (prints on the floor, a door standing open, a shape at the end of the corridor), and its line names that thing in ${MAX_WORDS_OPENING} words or fewer.
+- Scene 1 is never setup: nobody arrives, moves in, greets anyone, asks an everyday question or just stands there. Who the main character is and where he is come out in passing from scene 3 onwards.
+- Scene 1 must unsettle someone who knows nothing about the story: no names, and no "he" or "it" that only an earlier part explains.
+- Scenes 2 and 3 make it worse. Nothing calms down and nobody does anything ordinary before scene 4.
+- "hook": a written headline shown large on screen during scene 1, never spoken: ${MAX_WORDS_OPENING} Arabic words or fewer, Egyptian colloquial, a question or claim a stranger needs answered (e.g. "مين دخل شقتي وأنا صاحي؟"). It does not repeat scene 1's line and gives nothing away.`;
+
 export const SCENE_RULES = `Rules for every scene:
 - "lines": what is spoken in the scene, in order, as [{"speaker": "...", "text": "..."}]. Usually ONE line by "Narrator". All the lines of a scene together are STRICTLY ${MAX_WORDS_PER_SCENE} words or fewer.
 - "text": Egyptian colloquial Arabic (عامية مصرية), the way people really say it out loud. Use "…" for dramatic pauses. No English, no digits, no emojis. Natural everyday Egyptian words, never stiff formal Arabic.
@@ -41,6 +51,9 @@ export function storyProblem(story: Story, scenes: number): string | null {
   const tooLong = story.scenes.filter((scene) => wordCount(scene.narration) > MAX_WORDS_PER_SCENE + 1);
   if (story.scenes.length !== scenes) return `${story.scenes.length} scenes instead of ${scenes}`;
   if (tooLong.length > 0) return `${tooLong.length} scenes over the word limit`;
+  const opening = wordCount(story.scenes[0]?.narration ?? "");
+  if (opening > MAX_WORDS_OPENING) return `scene 1 says ${opening} words; the opening line must be ${MAX_WORDS_OPENING} or fewer`;
+  if (wordCount(story.hook) > MAX_WORDS_OPENING + 1) return `the "hook" headline is over ${MAX_WORDS_OPENING} words`;
   const speakers = new Set([NARRATOR, HERO, ...story.cast.map((member) => member.name)]);
   const unknown = story.scenes.flatMap((scene) => scene.lines).find((line) => !speakers.has(line.speaker));
   if (unknown) return `unknown speaker "${unknown.speaker}"`;
@@ -60,7 +73,9 @@ function buildPrompt(topic: string, scenes: number): string {
 Write one original, self-contained horror story about: ${topic}
 
 The story is told by a narrator over ${scenes} scenes. Each scene is one still image that gets animated for 5 seconds.
-Scene 1 is a hook that makes the viewer stay. The last scene is a twist or a chilling final line. One main character, kept the same in every scene.
+The last scene is a twist or a chilling final line. One main character, kept the same in every scene.
+
+${OPENING_RULES}
 
 ${SCENE_RULES}
 ${dialogueRules([])}
@@ -73,6 +88,7 @@ Return ONLY JSON with this shape:
 {
   "title": "Arabic title, Egyptian colloquial, under 60 characters",
   "description": "one or two Arabic sentences for the video description",
+  "hook": "the on-screen headline for scene 1",
   "hashtags": ["#رعب", "..."],
   "characterSheet": "...",
   "styleSheet": "...",

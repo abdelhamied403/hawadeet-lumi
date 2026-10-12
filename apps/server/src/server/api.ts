@@ -11,8 +11,9 @@ import { SFX } from "../stages/sfx";
 import { seriesBibleSchema } from "../stages/series";
 import { authEnabled, login, loginSchema, logout, mediaToken, requireMediaAccess, requireSession, signedIn } from "./auth";
 import { estimateStep } from "./estimates";
+import { totalPlays } from "../stages/analytics";
 import { AI_NOTE, POST_TEXT_MAX } from "../stages/posts";
-import { approveStep, buildDescription, createNextEpisode, draftPost, MODEL, publishEpisode, publishPost, rejectStep, rewritePost, tick } from "./engine";
+import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, createNextEpisode, draftPost, MODEL, publishEpisode, publishPost, rejectStep, rewritePost, takeReport, tick } from "./engine";
 import {
   getEpisode,
   getPost,
@@ -22,18 +23,22 @@ import {
   getSteps,
   listEpisodes,
   listPosts,
+  listReports,
   listSeries,
   OUTPUT_DIR,
+  reportBefore,
   saveEpisodeStory,
   saveSeriesBible,
   saveSettings,
   setEpisodeStatus,
+  setSeriesFullStoryUrl,
   setSeriesStatus,
   settingsSchema,
   STEP_NAMES,
   updatePost,
   type Episode,
   type Post,
+  type Series,
   type StepName,
 } from "./store";
 
@@ -121,7 +126,7 @@ function requireEpisode(id: string): Episode {
 
 class HttpError extends Error {
   constructor(
-    public status: 400 | 401 | 404 | 409 | 429,
+    public status: 400 | 401 | 404 | 409 | 429 | 502,
     message: string,
   ) {
     super(message);
@@ -201,16 +206,61 @@ app.get("/api/overview", async (context) => {
   });
 });
 
-app.get("/api/series/:id", (context) => {
-  const series = getSeries(Number(context.req.param("id")));
-  if (!series) throw new HttpError(404, "No such series");
-  return context.json({
+const fullStoryLinkSchema = z.object({ url: z.union([z.literal(""), z.url()]) });
+
+// The whole story joined into one video for YouTube: whether it can be made, and what goes with it.
+async function presentFullStory(series: Series) {
+  const published = listEpisodes({ seriesId: series.id, status: "published" }).map((episode) => episode.partNumber).sort((a, b) => a - b);
+  const files = fullStoryPaths(series.id);
+  const partsFile = Bun.file(files.parts);
+  const built = (await partsFile.exists()) ? ((await partsFile.json()) as { parts: number[]; builtAt: string }) : null;
+  return {
+    publishedParts: published,
+    building: fullStoryBuilding(series.id),
+    videoUrl: built ? await versioned(files.video) : null,
+    // Which parts the video on the server holds; fewer than `publishedParts` means it is out of date.
+    includedParts: built?.parts ?? [],
+    builtAt: built?.builtAt ?? null,
+    ...(await fullStoryText(series)),
+    youtubeUrl: series.fullStoryUrl,
+  };
+}
+
+async function presentSeries(series: Series) {
+  return {
     id: series.id,
     status: series.status,
     createdAt: series.createdAt,
     ...series.bible,
     episodes: listEpisodes({ seriesId: series.id }).reverse().map(summarize),
-  });
+    fullStory: await presentFullStory(series),
+  };
+}
+
+function requireSeries(id: string): Series {
+  const series = getSeries(Number(id));
+  if (!series) throw new HttpError(404, "No such series");
+  return series;
+}
+
+app.get("/api/series/:id", async (context) => context.json(await presentSeries(requireSeries(context.req.param("id")))));
+
+// Joins the published parts into one video. It takes a few minutes, so the answer comes back straight away
+// with `building` set and the app keeps reading the series until the video is there.
+app.post("/api/series/:id/full-story", async (context) => {
+  const series = requireSeries(context.req.param("id"));
+  if (fullStoryBuilding(series.id)) throw new HttpError(409, "The full story is already being put together");
+  if (listEpisodes({ seriesId: series.id, status: "published" }).length < 2) throw new HttpError(409, "The full story needs at least two published parts");
+  void buildFullStory(series.id).catch((error) => console.error(`full story of series ${series.id}: ${error instanceof Error ? error.message : error}`));
+  return context.json(await presentSeries(series), 202);
+});
+
+// Saves where the full story was uploaded, so later descriptions can send viewers to it. An empty link clears it.
+app.put("/api/series/:id/full-story", async (context) => {
+  const series = requireSeries(context.req.param("id"));
+  const body = fullStoryLinkSchema.parse(await context.req.json());
+  setSeriesFullStoryUrl(series.id, body.url || null);
+  return context.json(await presentSeries(requireSeries(context.req.param("id"))));
 });
 
 // Edits the series plan. Later parts are written from the new plan; parts already written are not changed.
@@ -226,15 +276,7 @@ app.put("/api/series/:id", async (context) => {
   // Parts are always numbered 1..n in order, whatever the client sent.
   saveSeriesBible(series.id, { ...bible, parts: bible.parts.map((part, index) => ({ ...part, number: index + 1 })) });
   if (series.status === "finished" && bible.parts.length > lastStarted) setSeriesStatus(series.id, "active");
-  const updated = getSeries(series.id);
-  if (!updated) throw new HttpError(404, "No such series");
-  return context.json({
-    id: updated.id,
-    status: updated.status,
-    createdAt: updated.createdAt,
-    ...updated.bible,
-    episodes: listEpisodes({ seriesId: updated.id }).reverse().map(summarize),
-  });
+  return context.json(await presentSeries(requireSeries(context.req.param("id"))));
 });
 
 app.post("/api/episodes", async (context) => {
@@ -250,7 +292,8 @@ app.get("/api/episodes/:id", async (context) => context.json(await detail(requir
 app.put("/api/episodes/:id/story", async (context) => {
   const episode = requireEpisode(context.req.param("id"));
   if (getStep(episode.id, "story").status !== "review") throw new HttpError(409, "The story can only be edited while it is in review");
-  const story = storySchema.parse(await context.req.json());
+  // The editors do not send the headline, so an edit keeps the one already written.
+  const story = storySchema.parse({ hook: episode.story?.hook, ...(await context.req.json()) });
   saveEpisodeStory(episode.id, story);
   await saveStory(episode.dir, story);
   return context.json(await detail(requireEpisode(context.req.param("id"))));
@@ -357,6 +400,39 @@ app.post("/api/posts/:id/discard", async (context) => {
   return context.json(await presentPost(updatePost(post.id, { status: "discarded" })));
 });
 
+const HISTORY_POINTS = 120;
+
+// The newest report, the one from about a day earlier to compare it with, and the trend across all of them.
+function analysis() {
+  const reports = listReports(HISTORY_POINTS);
+  const latest = reports[0] ?? null;
+  return {
+    facebookConnected: Boolean(config.FACEBOOK_PAGE_ID && config.FACEBOOK_PAGE_TOKEN),
+    latest,
+    dayBefore: latest ? reportBefore(new Date(new Date(latest.takenAt).getTime() - 23 * 3_600_000)) : null,
+    history: reports
+      .map((report) => ({ takenAt: report.takenAt, followers: report.page.followers, plays: totalPlays(report) }))
+      .reverse(),
+  };
+}
+
+app.get("/api/analysis", (context) => context.json(analysis()));
+
+// Every kept report in full, newest first, for a closer look than the app's screen gives.
+app.get("/api/analysis/reports", (context) => context.json(listReports(Number(context.req.query("limit")) || 30)));
+
+app.post("/api/analysis/refresh", async (context) => {
+  await takeReport();
+  return context.json(analysis(), 201);
+});
+
+app.post("/api/alerts/test", async (context) => {
+  if (!alertsConfigured) throw new HttpError(409, "Alerts are not set up on the server (NTFY_TOPIC is missing)");
+  const sent = await alert({ title: "Veogen alerts are working", message: "This is the test you asked for.", click: "veogen://", tags: ["white_check_mark"] }, { force: true });
+  if (!sent) throw new HttpError(502, "The alert could not be sent");
+  return context.json({ sent });
+});
+
 app.get("/api/settings", (context) =>
   context.json({
     ...getSettings(),
@@ -364,7 +440,10 @@ app.get("/api/settings", (context) =>
       kaggle: Boolean(config.KAGGLE_USERNAME && config.KAGGLE_KEY),
       gemini: Boolean(config.GEMINI_API_KEY),
       facebook: Boolean(config.FACEBOOK_PAGE_ID && config.FACEBOOK_PAGE_TOKEN),
+      alerts: alertsConfigured,
     },
+    // What the owner's ntfy app subscribes to; null until NTFY_TOPIC is set.
+    alertsTopic: config.NTFY_TOPIC ? { server: config.NTFY_SERVER, topic: config.NTFY_TOPIC } : null,
   }),
 );
 

@@ -3,6 +3,9 @@ import { format } from "date-fns";
 import { config } from "../config";
 import { paths, saveStory } from "../lib/project";
 import { publishPagePost, publishReel } from "../services/facebook";
+import { sendAlert, type SendAlertPayload } from "../services/ntfy";
+import { collectReport, summarizeReport } from "../stages/analytics";
+import { runFullStory } from "../stages/fullstory";
 import { runAssemble } from "../stages/assemble";
 import { SFX_CREDITS } from "../stages/sfx";
 import { directMotion } from "../stages/motion";
@@ -22,9 +25,13 @@ import {
   getSteps,
   listEpisodes,
   listPosts,
+  listReports,
   listSeries,
+  OUTPUT_DIR,
   POST_ANGLES,
+  reportBefore,
   saveEpisodeStory,
+  saveReport,
   setEpisodeStatus,
   setSeriesStatus,
   STEP_NAMES,
@@ -33,6 +40,8 @@ import {
   type Episode,
   type Post,
   type PostAngle,
+  type Report,
+  type Series,
   type StepMeta,
   type StepName,
 } from "./store";
@@ -41,6 +50,8 @@ export const MODEL: MotionModel = "wan14b";
 const KAGGLE_POLL_MS = 60_000;
 const MAX_EPISODES_IN_PROGRESS = 2;
 const MUSIC_CREDIT = `Kevin MacLeod (incompetech.com)\nLicensed under Creative Commons: By Attribution 4.0 License\nhttp://creativecommons.org/licenses/by/4.0/`;
+// Asks viewers to follow the Page; worded to fit any part of a series, the last one included.
+const FOLLOW_LINE = "تابعوا عتمة عشان كل جزء جديد يوصلكم أول ما ينزل 🕯️";
 
 // Steps running inside this process; anything marked running but missing here was cut off by a restart.
 const localTasks = new Set<string>();
@@ -54,10 +65,41 @@ const sceneNumbers = (episode: Episode) => (episode.story?.scenes ?? []).map((_,
 // Network errors that mean "no connection right now", as opposed to a refusal by the service.
 const OFFLINE = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|ECONNRESET|ETIMEDOUT/;
 
+export const alertsConfigured = Boolean(config.NTFY_TOPIC);
+
+// Sends an alert to the owner's phone. A failed alert is logged and never stops the work that raised it.
+export async function alert(payload: Omit<SendAlertPayload, "topic">, options: { force?: boolean } = {}): Promise<boolean> {
+  if (!config.NTFY_TOPIC || (!options.force && !getSettings().notifications)) return false;
+  try {
+    await sendAlert({ topic: config.NTFY_TOPIC, ...payload });
+    return true;
+  } catch (error) {
+    console.error(`alert not sent: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+}
+
+const STEP_LABELS: Record<StepName, string> = { story: "Script", voice: "Voice", images: "Images", clips: "Motion", video: "Final cut", publish: "Publish" };
+
+// Tells the owner a step now needs them: it is ready to review, or it failed.
+function alertStep(episodeId: number, step: StepName, outcome: "review" | "failed", detail?: string): void {
+  const part = getEpisode(episodeId)?.partNumber ?? episodeId;
+  const title =
+    outcome === "failed" ? `Part ${part}: ${STEP_LABELS[step]} failed` : step === "publish" ? `Part ${part} is ready to publish` : `Part ${part}: ${STEP_LABELS[step]} ready for review`;
+  void alert({
+    title,
+    message: outcome === "failed" ? (detail ?? "Open the part to see what went wrong.").slice(0, 300) : "Open Veogen to review it.",
+    click: `veogen://episodes/${episodeId}`,
+    tags: [outcome === "failed" ? "warning" : "clapper"],
+    priority: outcome === "failed" ? 4 : 3,
+  });
+}
+
 function fail(episodeId: number, step: StepName, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`episode ${episodeId} ${step} failed: ${message}`);
   updateStep(episodeId, step, { status: "failed", error: message.slice(0, 2000) });
+  alertStep(episodeId, step, "failed", message.split("\n")[0]);
 }
 
 function runLocal(episode: Episode, step: StepName, work: () => Promise<void>): void {
@@ -65,7 +107,10 @@ function runLocal(episode: Episode, step: StepName, work: () => Promise<void>): 
   localTasks.add(key);
   updateStep(episode.id, step, { status: "running", error: null, meta: { startedAt: new Date().toISOString() } });
   work()
-    .then(() => updateStep(episode.id, step, { status: "review" }))
+    .then(() => {
+      updateStep(episode.id, step, { status: "review" });
+      alertStep(episode.id, step, "review");
+    })
     .catch((error) => {
       // With the laptop offline nothing is wrong with the step: it waits and tries again on a later tick.
       if (OFFLINE.test(error instanceof Error ? error.message : String(error))) {
@@ -155,6 +200,7 @@ async function pollRender(episode: Episode, step: "images" | "clips"): Promise<v
     }
     if (missing.length === 0) {
       updateStep(episode.id, step, { status: "review", error: null });
+      alertStep(episode.id, step, "review");
     } else {
       fail(episode.id, step, `The Kaggle job ended (${result.status}) without scenes ${missing.join(", ")}.\n${result.logTail}`);
     }
@@ -197,6 +243,7 @@ async function advance(episode: Episode): Promise<void> {
     case "publish":
       // Nothing to prepare: it waits for the owner to press Publish.
       updateStep(episode.id, name, { status: "review" });
+      alertStep(episode.id, name, "review");
   }
 }
 
@@ -336,6 +383,7 @@ async function ensurePagePosts(): Promise<void> {
   try {
     const post = await draftPost();
     console.log(`drafted Page post ${post.id} (${post.angle})`);
+    void alert({ title: "A Page post is ready to review", message: post.text.slice(0, 200), click: "veogen://posts", tags: ["memo"], priority: 2 });
   } catch (error) {
     lastPostFailure = Date.now();
     console.error(`could not draft a Page post: ${error instanceof Error ? error.message : error}`);
@@ -344,10 +392,51 @@ async function ensurePagePosts(): Promise<void> {
   }
 }
 
+// Local hours at which the Page's numbers are recorded; the last one of the day also sends the summary alert.
+const REPORT_HOURS = [2, 8, 14, 20];
+const SUMMARY_HOUR = 20;
+const REPORT_RETRY_MS = 30 * 60_000;
+let reporting = false;
+let lastReportFailure = 0;
+
+// Records the Page's numbers now. Kept so that later reports can be compared with this one.
+export async function takeReport(): Promise<Report> {
+  if (!config.FACEBOOK_PAGE_ID || !config.FACEBOOK_PAGE_TOKEN) throw new Error("Facebook is not connected yet (see Settings)");
+  return saveReport(await collectReport({ pageId: config.FACEBOOK_PAGE_ID, pageToken: config.FACEBOOK_PAGE_TOKEN }));
+}
+
+async function ensureReport(): Promise<void> {
+  if (!config.FACEBOOK_PAGE_ID || !config.FACEBOOK_PAGE_TOKEN || reporting || Date.now() - lastReportFailure < REPORT_RETRY_MS) return;
+  // The most recent report hour that has already passed, today or yesterday.
+  const now = new Date();
+  const due = REPORT_HOURS.map((hour) => new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour))
+    .flatMap((slot) => [slot, new Date(slot.getTime() - 24 * 3_600_000)])
+    .filter((slot) => slot <= now)
+    .sort((a, b) => b.getTime() - a.getTime())[0] as Date;
+  const latest = listReports(1)[0];
+  if (latest && new Date(latest.takenAt) >= due) return;
+  reporting = true;
+  try {
+    const report = await takeReport();
+    console.log(`report ${report.id}: ${report.page.followers} followers, ${report.reels.length} reels`);
+    if (due.getHours() === SUMMARY_HOUR) {
+      const dayBefore = reportBefore(new Date(now.getTime() - 23 * 3_600_000));
+      void alert({ title: "Today on the Page", message: summarizeReport(report, dayBefore), click: "veogen://analysis", tags: ["bar_chart"], priority: 2 });
+    }
+  } catch (error) {
+    lastReportFailure = Date.now();
+    console.error(`could not take a report: ${error instanceof Error ? error.message : error}`);
+  } finally {
+    reporting = false;
+  }
+}
+
 export async function tick(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
+    // Not awaited: reading numbers from Facebook must not hold up the parts in production.
+    void ensureReport();
     await ensureDailyEpisode();
     // Not awaited: writing a post must not hold up the parts in production.
     void ensurePagePosts();
@@ -392,14 +481,27 @@ export function rejectStep(episodeId: number, name: StepName, options: RejectOpt
   }
 }
 
+async function musicTrack(episode: Episode): Promise<string> {
+  const musicFile = Bun.file(`${episode.dir}/music.txt`);
+  return (await musicFile.exists()) ? (await musicFile.text()).replace(/\.[^.]+$/, "") : "";
+}
+
+// Sends viewers to YouTube for the whole story: to the joined video once it is up, to the channel until then.
+function fullStoryLine(series: Series | null): string {
+  if (series?.fullStoryUrl) return `الحكاية كاملة على يوتيوب: ${series.fullStoryUrl}`;
+  const channel = getSettings().youtubeUrl;
+  return channel ? `الحكاية كاملة هتنزل على يوتيوب: ${channel}` : "";
+}
+
 export async function buildDescription(episode: Episode): Promise<string> {
   const story = episode.story;
   if (!story) return "";
-  const musicFile = Bun.file(`${episode.dir}/music.txt`);
-  const track = (await musicFile.exists()) ? (await musicFile.text()).replace(/\.[^.]+$/, "") : "";
+  const track = await musicTrack(episode);
   return [
     story.title,
     story.description,
+    FOLLOW_LINE,
+    fullStoryLine(getSeries(episode.seriesId)),
     story.hashtags.join(" "),
     "هذا المحتوى مصنوع بالذكاء الاصطناعي.",
     track ? `Music: "${track}" ${MUSIC_CREDIT}` : "",
@@ -407,6 +509,63 @@ export async function buildDescription(episode: Episode): Promise<string> {
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+export const fullStoryPaths = (seriesId: number) => {
+  const dir = `${OUTPUT_DIR}/series/s${seriesId}`;
+  return { video: `${dir}/full-story.mp4`, parts: `${dir}/full-story.json` };
+};
+
+const fullStoryBuilds = new Set<number>();
+export const fullStoryBuilding = (seriesId: number) => fullStoryBuilds.has(seriesId);
+
+// The published parts of a series that have a finished video, in story order.
+function publishedParts(seriesId: number): Episode[] {
+  return listEpisodes({ seriesId, status: "published" }).sort((a, b) => a.partNumber - b.partNumber);
+}
+
+// Joins every published part of a series into one video for YouTube. Returns the part numbers it holds.
+export async function buildFullStory(seriesId: number): Promise<number[]> {
+  if (fullStoryBuilds.has(seriesId)) throw new Error("The full story is already being put together");
+  const parts = publishedParts(seriesId);
+  if (parts.length < 2) throw new Error("The full story needs at least two published parts");
+  const videos = parts.map((episode) => paths.final(episode.dir, MODEL));
+  for (const [index, file] of videos.entries()) {
+    if (!(await Bun.file(file).exists())) throw new Error(`Part ${parts[index]?.partNumber} has no finished video on the server`);
+  }
+  const target = fullStoryPaths(seriesId);
+  fullStoryBuilds.add(seriesId);
+  try {
+    await runFullStory(videos, target.video);
+    const numbers = parts.map((episode) => episode.partNumber);
+    await Bun.write(target.parts, JSON.stringify({ parts: numbers, builtAt: new Date().toISOString() }));
+    return numbers;
+  } finally {
+    fullStoryBuilds.delete(seriesId);
+  }
+}
+
+// Title and description for the joined video.
+export async function fullStoryText(series: Series): Promise<{ title: string; description: string }> {
+  const parts = publishedParts(series.id);
+  const tracks = new Set((await Promise.all(parts.map(musicTrack))).filter(Boolean));
+  const effects = new Set(
+    parts.flatMap((episode) => (episode.story?.scenes ?? []).map((scene) => SFX_CREDITS[scene.sfx ?? ""])).filter((credit): credit is string => Boolean(credit)),
+  );
+  return {
+    title: `${series.bible.title} | الحكاية كاملة`,
+    description: [
+      `${series.bible.title} | الحكاية كاملة`,
+      parts[0]?.story?.description ?? "",
+      FOLLOW_LINE,
+      series.bible.hashtags.join(" "),
+      "هذا المحتوى مصنوع بالذكاء الاصطناعي.",
+      ...[...tracks].map((track) => `Music: "${track}" ${MUSIC_CREDIT}`),
+      ...effects,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+  };
 }
 
 export async function publishEpisode(episodeId: number): Promise<void> {
@@ -444,5 +603,11 @@ export async function publishEpisode(episodeId: number): Promise<void> {
   updateStep(episodeId, "publish", { status: "approved", meta: { published } });
   setEpisodeStatus(episodeId, "published");
   const series = getSeries(episode.seriesId);
-  if (series && episode.partNumber >= series.bible.parts.length) setSeriesStatus(series.id, "finished");
+  if (series && episode.partNumber >= series.bible.parts.length) {
+    setSeriesStatus(series.id, "finished");
+    // The last part is out, so the whole story can be joined for YouTube without being asked.
+    void buildFullStory(series.id)
+      .then(() => alert({ title: "The full story is ready", message: `${series.bible.title}: every part joined into one video for YouTube.`, click: "veogen://series", tags: ["film_projector"] }))
+      .catch((error) => console.error(`full story of series ${series.id}: ${error instanceof Error ? error.message : error}`));
+  }
 }

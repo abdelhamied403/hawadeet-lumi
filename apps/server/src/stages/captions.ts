@@ -54,7 +54,13 @@ export function buildCaptions(voices: SceneVoice[], sceneStarts: number[], scene
   return captions;
 }
 
-export function buildAss(captions: Caption[]): string {
+// The headline sits near the top, clear of the platforms' own header, and fades out with the first scene.
+const HOOK_STYLE = `Hook,${config.CAPTION_FONT},112,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,1,0,0,0,100,100,0,0,1,8,2,8,90,90,300,1`;
+const HOOK_FADE_MS = 300;
+
+export type Hook = { text: string; end: number };
+
+export function buildAss(captions: Caption[], hook?: Hook): string {
   const style = [
     "Caption",
     config.CAPTION_FONT,
@@ -96,9 +102,11 @@ export function buildAss(captions: Caption[]): string {
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
     `Style: ${style}`,
+    `Style: ${HOOK_STYLE}`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ...(hook && cleanWord(hook.text) ? [`Dialogue: 1,${timestamp(0)},${timestamp(hook.end)},Hook,,0,0,0,,{\\fad(0,${HOOK_FADE_MS})}${cleanWord(hook.text)}`] : []),
     ...events,
     "",
   ].join("\n");

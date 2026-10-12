@@ -110,6 +110,158 @@ export async function deletePageObject(payload: { id: string; pageToken: string 
   }
 }
 
+export type PageAccess = { pageId: string; pageToken: string };
+
+export type PageSummary = { name: string; followers: number; likes: number };
+
+// The Page's name and audience size.
+export async function getPageSummary(payload: PageAccess): Promise<PageSummary> {
+  try {
+    const response = await graphHttp.get<{ name: string; followers_count?: number; fan_count?: number }>(`/${payload.pageId}`, {
+      params: { fields: "name,followers_count,fan_count", access_token: payload.pageToken },
+    });
+    return { name: response.data.name, followers: response.data.followers_count ?? 0, likes: response.data.fan_count ?? 0 };
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+type Count = { summary?: { total_count?: number } };
+
+export type PageReel = {
+  id: string;
+  createdAt: string;
+  description: string;
+  lengthSeconds: number;
+  url: string;
+  comments: number;
+};
+
+// The Page's Reels, newest first.
+export async function listPageReels(payload: PageAccess): Promise<PageReel[]> {
+  try {
+    const response = await graphHttp.get<{
+      data: { id: string; created_time: string; description?: string; length?: number; permalink_url?: string; comments?: Count }[];
+    }>(`/${payload.pageId}/video_reels`, {
+      params: {
+        limit: 50,
+        fields: "id,created_time,description,length,permalink_url,comments.summary(total_count).limit(0)",
+        access_token: payload.pageToken,
+      },
+    });
+    return response.data.data.map((reel) => ({
+      id: reel.id,
+      createdAt: reel.created_time,
+      description: reel.description ?? "",
+      lengthSeconds: reel.length ?? 0,
+      url: `https://www.facebook.com${reel.permalink_url ?? `/reel/${reel.id}/`}`,
+      comments: reel.comments?.summary?.total_count ?? 0,
+    }));
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type ReelInsights = {
+  plays: number;
+  replays: number;
+  averageWatchSeconds: number;
+  totalWatchSeconds: number;
+  reactions: number;
+  // People who followed the Page from this Reel.
+  follows: number;
+  // Share of viewers still watching at 41 evenly spaced points from the start to the end, 0 to 1.
+  retention: number[];
+};
+
+type InsightValue = number | Record<string, number>;
+
+// Watch numbers for one Reel. Needs the read_insights permission.
+export async function getReelInsights(payload: { videoId: string; pageToken: string }): Promise<ReelInsights> {
+  try {
+    const response = await graphHttp.get<{ data: { name: string; values: { value: InsightValue }[] }[] }>(`/${payload.videoId}/video_insights`, {
+      params: { access_token: payload.pageToken },
+    });
+    const metrics = new Map(response.data.data.map((metric) => [metric.name, metric.values[0]?.value]));
+    const number = (name: string) => (typeof metrics.get(name) === "number" ? (metrics.get(name) as number) : 0);
+    const record = (name: string) => (typeof metrics.get(name) === "object" ? (metrics.get(name) as Record<string, number>) : {});
+    const graph = record("post_video_retention_graph");
+    return {
+      plays: number("fb_reels_total_plays"),
+      replays: number("fb_reels_replay_count"),
+      averageWatchSeconds: number("post_video_avg_time_watched") / 1000,
+      totalWatchSeconds: number("post_video_view_time") / 1000,
+      reactions: Object.values(record("post_video_likes_by_reaction_type")).reduce((sum, count) => sum + count, 0),
+      follows: number("post_video_followers"),
+      retention: Object.keys(graph)
+        .sort((a, b) => Number(a) - Number(b))
+        .map((point) => graph[point] ?? 0),
+    };
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type PagePost = {
+  id: string;
+  createdAt: string;
+  message: string;
+  kind: "text" | "photo" | "video";
+  url: string;
+  // Times the post appeared on someone's screen.
+  views: number;
+  clicks: number;
+  reactions: number;
+  comments: number;
+  shares: number;
+};
+
+// Everything on the Page's timeline with its response. Needs read_insights and pages_read_user_content.
+export async function listPagePosts(payload: PageAccess): Promise<PagePost[]> {
+  try {
+    const response = await graphHttp.get<{
+      data: {
+        id: string;
+        created_time: string;
+        message?: string;
+        status_type?: string;
+        permalink_url?: string;
+        shares?: { count?: number };
+        reactions?: Count;
+        comments?: Count;
+        insights?: { data: { name: string; values: { value: InsightValue }[] }[] };
+      }[];
+    }>(`/${payload.pageId}/posts`, {
+      params: {
+        limit: 50,
+        fields:
+          "id,created_time,message,status_type,permalink_url,shares,reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0),insights.metric(post_media_view,post_clicks)",
+        access_token: payload.pageToken,
+      },
+    });
+    return response.data.data.map((post) => {
+      const insight = (name: string) => {
+        const value = post.insights?.data.find((metric) => metric.name === name)?.values[0]?.value;
+        return typeof value === "number" ? value : 0;
+      };
+      return {
+        id: post.id,
+        createdAt: post.created_time,
+        message: post.message ?? "",
+        kind: post.status_type === "added_video" ? "video" : post.status_type === "added_photos" ? "photo" : "text",
+        url: post.permalink_url ?? `https://www.facebook.com/${post.id}`,
+        views: insight("post_media_view"),
+        clicks: insight("post_clicks"),
+        reactions: post.reactions?.summary?.total_count ?? 0,
+        comments: post.comments?.summary?.total_count ?? 0,
+        shares: post.shares?.count ?? 0,
+      };
+    });
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
 export type ExchangeTokenPayload = {
   appId: string;
   appSecret: string;

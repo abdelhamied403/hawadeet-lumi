@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { z } from "zod";
 import { storySchema, type Story } from "../schemas/story";
+import type { ReportData } from "../stages/analytics";
 import { seriesBibleSchema, type SeriesBible } from "../stages/series";
 
 export const OUTPUT_DIR = "output";
@@ -49,7 +50,16 @@ db.exec(`
     created_at TEXT NOT NULL,
     published_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    taken_at TEXT NOT NULL,
+    data TEXT NOT NULL
+  );
 `);
+
+// Columns added after the first release; a database made before them gets them here.
+const seriesColumns = db.query<{ name: string }, []>("PRAGMA table_info(series)").all().map((column) => column.name);
+if (!seriesColumns.includes("full_story_url")) db.exec("ALTER TABLE series ADD COLUMN full_story_url TEXT");
 
 export const STEP_NAMES = ["story", "voice", "images", "clips", "video", "publish"] as const;
 export type StepName = (typeof STEP_NAMES)[number];
@@ -76,7 +86,15 @@ export const stepMetaSchema = z.object({
 export type StepMeta = z.infer<typeof stepMetaSchema>;
 
 export type Step = { name: StepName; status: StepStatus; meta: StepMeta; error: string | null; updatedAt: string };
-export type Series = { id: number; bible: SeriesBible; seed: number; status: "active" | "finished"; createdAt: string };
+export type Series = {
+  id: number;
+  bible: SeriesBible;
+  seed: number;
+  status: "active" | "finished";
+  createdAt: string;
+  // Where the whole story, joined into one video, was uploaded (YouTube); null until the owner saves the link.
+  fullStoryUrl: string | null;
+};
 export type Episode = {
   id: number;
   seriesId: number;
@@ -116,10 +134,14 @@ export const settingsSchema = z.object({
   partsPerSeries: z.number().int().min(2).max(12).default(6),
   // Page posts drafted each day between videos; 0 turns them off.
   postsPerDay: z.number().int().min(0).max(3).default(1),
+  // The YouTube channel viewers are sent to for the whole story; empty leaves that line out of descriptions.
+  youtubeUrl: z.union([z.literal(""), z.url()]).default(""),
+  // Send phone alerts (needs NTFY_TOPIC in .env).
+  notifications: z.boolean().default(true),
 });
 export type Settings = z.infer<typeof settingsSchema>;
 
-type SeriesRow = { id: number; bible: string; seed: number; status: string; created_at: string };
+type SeriesRow = { id: number; bible: string; seed: number; status: string; created_at: string; full_story_url: string | null };
 type EpisodeRow = {
   id: number;
   series_id: number;
@@ -141,6 +163,7 @@ function toSeries(row: SeriesRow): Series {
     seed: row.seed,
     status: row.status as Series["status"],
     createdAt: row.created_at,
+    fullStoryUrl: row.full_story_url,
   };
 }
 
@@ -186,6 +209,10 @@ export function listSeries(): Series[] {
 
 export function saveSeriesBible(id: number, bible: SeriesBible): void {
   db.query("UPDATE series SET bible = ? WHERE id = ?").run(JSON.stringify(bible), id);
+}
+
+export function setSeriesFullStoryUrl(id: number, url: string | null): void {
+  db.query("UPDATE series SET full_story_url = ? WHERE id = ?").run(url, id);
 }
 
 export function setSeriesStatus(id: number, status: Series["status"]): void {
@@ -323,4 +350,26 @@ export function updatePost(
     id,
   );
   return getPost(id) as Post;
+}
+
+export type Report = ReportData & { id: number; takenAt: string };
+
+type ReportRow = { id: number; taken_at: string; data: string };
+
+const toReport = (row: ReportRow): Report => ({ ...(JSON.parse(row.data) as ReportData), id: row.id, takenAt: row.taken_at });
+
+export function saveReport(data: ReportData): Report {
+  const { lastInsertRowid } = db.query("INSERT INTO reports (taken_at, data) VALUES (?, ?)").run(now(), JSON.stringify(data));
+  return toReport(db.query<ReportRow, [number]>("SELECT * FROM reports WHERE id = ?").get(Number(lastInsertRowid)) as ReportRow);
+}
+
+// Newest first.
+export function listReports(limit = 200): Report[] {
+  return db.query<ReportRow, [number]>("SELECT * FROM reports ORDER BY id DESC LIMIT ?").all(limit).map(toReport);
+}
+
+// The newest report taken at or before the given moment.
+export function reportBefore(moment: Date): Report | null {
+  const row = db.query<ReportRow, [string]>("SELECT * FROM reports WHERE taken_at <= ? ORDER BY id DESC LIMIT 1").get(moment.toISOString());
+  return row ? toReport(row) : null;
 }

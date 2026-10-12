@@ -1,5 +1,5 @@
 import axios from "axios";
-import { requireGeminiKey, requireKaggle } from "../config";
+import { config, requireGeminiKey, requireKaggle } from "../config";
 
 function kaggleAuthHeader(): string {
   const { username, key } = requireKaggle();
@@ -39,3 +39,6 @@ export const graphHttp = axios.create({
 
 // Facebook's upload host for video bytes; takes a full URL per request.
 export const uploadHttp = axios.create({ timeout: 20 * 60_000, maxBodyLength: Infinity });
+
+// ntfy, which delivers alerts to the owner's phone. The topic is part of each message.
+export const ntfyHttp = axios.create({ baseURL: config.NTFY_SERVER, timeout: 20_000 });

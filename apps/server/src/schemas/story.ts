@@ -53,6 +53,8 @@ export const sceneSchema = z
 export const storySchema = z.object({
   title: z.string().min(1),
   description: z.string().default(""),
+  // Arabic headline shown large on screen during the first scene; never spoken. Empty for older stories.
+  hook: z.string().default(""),
   hashtags: z.array(z.string()).default([]),
   // Appended to every image prompt to keep the character and look consistent.
   characterSheet: z.string().default(""),

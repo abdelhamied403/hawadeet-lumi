@@ -2,7 +2,7 @@ import { z } from "zod";
 import { writeJson } from "../lib/story-model";
 import { config } from "../config";
 import { castMemberSchema, sceneSchema, storySchema, type CastMember, type Story } from "../schemas/story";
-import { dialogueRules, proofreadStory, SCENE_RULES, storyProblem } from "./script";
+import { dialogueRules, OPENING_RULES, proofreadStory, SCENE_RULES, storyProblem } from "./script";
 import { assignSfx } from "./sfx";
 
 const MAX_ATTEMPTS = 3;
@@ -118,6 +118,7 @@ with exactly ${options.parts} parts and one or two cast members.`;
 
 const partReplySchema = z.object({
   description: z.string().default(""),
+  hook: z.string().default(""),
   scenes: z.array(sceneSchema).min(1),
 });
 
@@ -155,9 +156,11 @@ What happens in this part: ${plan.summary}
 ${isLast ? "This is the FINAL part: resolve the mystery and end on a chilling last line." : `It must end on this cliffhanger: ${plan.cliffhanger}`}
 
 Structure: exactly ${options.scenes} scenes, each one still image animated for 5 seconds with one or two spoken lines.
-- Scene 1 ${partNumber === 1 ? "is a hook that makes a new viewer stay" : "pulls the viewer straight back in with one line that recalls where the last part stopped, without retelling it"}.
-- Continue directly from the previous narration. Do not contradict it and do not repeat its lines.
+- ${partNumber === 1 ? "Open on the first frightening thing that happens, not on how the main character got there." : "Pick the story up where the last part stopped, but open on what is frightening NOW, shown so that it works without having seen that part. Do not retell it."}
+- Do not contradict the previous narration and do not repeat its lines.
 - ${isLast ? "The last scene closes the story." : "The last scene is the cliffhanger: stop at the most tense moment."}
+
+${OPENING_RULES}
 
 ${SCENE_RULES}
 ${dialogueRules(bible.cast)}
@@ -165,6 +168,7 @@ ${options.current && options.note ? `\nThe producer rejected the previous versio
 Return ONLY JSON:
 {
   "description": "one or two Arabic sentences (Egyptian colloquial) for this part's video description, no spoilers",
+  "hook": "the on-screen headline for scene 1",
   "scenes": [{ "lines": [{ "speaker": "Narrator", "text": "..." }], "imagePrompt": "...", "shows": ["Hero"], "motionPrompt": "..." }]
 }
 with exactly ${options.scenes} scenes.`;
@@ -175,6 +179,7 @@ with exactly ${options.scenes} scenes.`;
     const story = storySchema.parse({
       title: `${bible.title} | الجزء ${partNumber}`,
       description: parsed.data.description,
+      hook: parsed.data.hook,
       hashtags: bible.hashtags,
       characterSheet: bible.characterSheet,
       styleSheet: bible.styleSheet,

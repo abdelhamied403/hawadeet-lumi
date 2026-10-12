@@ -122,7 +122,7 @@ export async function runAssemble(dir: string, model: string, options: AssembleO
   await concat(videoSegments, join(work, "video.txt"), joinedVideo);
   await concat(audioSegments, join(work, "audio.txt"), narration);
 
-  await Bun.write(paths.captions(dir), buildAss(buildCaptions(voices, starts, ends)));
+  await Bun.write(paths.captions(dir), buildAss(buildCaptions(voices, starts, ends), { text: story.hook, end: ends[0] ?? 0 }));
 
   const music = await findMusic(dir, options.musicTrack);
   const inputs = ["-i", joinedVideo, "-i", narration];

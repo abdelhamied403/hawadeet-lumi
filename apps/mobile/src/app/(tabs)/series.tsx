@@ -3,6 +3,7 @@ import { router } from "expo-router";
 import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { FilmstripMini } from "@/components/filmstrip";
+import { FullStoryCard } from "@/components/full-story";
 import { Failure, Loading, Screen } from "@/components/screen";
 import { SeriesPlanEditor } from "@/components/series-plan-editor";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,8 @@ export default function SeriesScreen() {
     queryKey: ["series", seriesId],
     queryFn: () => getSeries(seriesId as number),
     enabled: seriesId !== null,
-    refetchInterval: 15_000,
+    // The joined video is put together on the server, so the screen checks back sooner while that runs.
+    refetchInterval: (query) => (query.state.data?.fullStory.building ? 5_000 : 15_000),
   });
 
   if (!overview.data) return overview.error ? <Failure message={errorMessage(overview.error)} onRetry={() => void overview.refetch()} /> : <Loading />;
@@ -103,6 +105,8 @@ function SeriesView({ series }: { series: SeriesDetail }) {
           </Body>
         ))}
       </View>
+
+      <FullStoryCard series={series} />
 
       <View className="gap-2">
         {series.parts.map((part) => {

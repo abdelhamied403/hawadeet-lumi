@@ -6,7 +6,8 @@
     "veogen": "bun run src/cli.ts",
     "typecheck": "tsc --noEmit",
     "server": "bun run src/server/index.ts",
-    "facebook-connect": "bun run src/facebook-connect.ts"
+    "facebook-connect": "bun run src/facebook-connect.ts",
+    "reports": "bun run src/reports.ts"
   },
   "trustedDependencies": [
     "ffmpeg-static"
