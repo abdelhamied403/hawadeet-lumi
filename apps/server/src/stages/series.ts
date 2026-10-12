@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { writeJson } from "../lib/story-model";
+import { textModels, writeJson } from "../lib/story-model";
 import { config } from "../config";
 import { castMemberSchema, placeSchema, propSchema, sceneSchema, storySchema, type CastMember, type Place, type Prop, type Story } from "../schemas/story";
 import { dialogueRules, OPENING_RULES, placeRules, proofreadStory, SCENE_RULES, storyProblem } from "./script";
@@ -104,15 +104,24 @@ export type PreviousPart = {
 
 async function writeValidated<T>(prompt: string, validate: (data: unknown) => T | string, images?: Buffer[]): Promise<T> {
   let problem = "";
+  let writer = "";
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     // A failed attempt's problem is told to the writer, so the next try fixes it.
-    const { data } = await writeJson(problem ? `${prompt}\n\nYour previous answer was rejected: ${problem}. Fix that.` : prompt, undefined, images);
+    const { data, model } = await writeJson(problem ? `${prompt}\n\nYour previous answer was rejected: ${problem}. Fix that.` : prompt, undefined, images);
+    writer = model;
     const result = validate(data);
     if (typeof result !== "string") return result;
     problem = result;
     console.warn(`writer attempt ${attempt} rejected: ${problem.slice(0, 200)}`);
   }
-  throw new Error(`The story writer did not return a usable result after ${MAX_ATTEMPTS} attempts: ${problem}`);
+  // The lightest model only writes when the stronger ones are over their free daily limit, and it rarely meets every rule.
+  const models = textModels();
+  const fallback = models.length > 1 && writer === models.at(-1);
+  throw new Error(
+    fallback
+      ? `The stronger writing models have used up today's free requests, and the fallback (${writer}) could not meet the rules: ${problem}. Their limit resets at 10:00 Cairo time; retry after that.`
+      : `The story writer did not return a usable result after ${MAX_ATTEMPTS} attempts: ${problem}`,
+  );
 }
 
 export async function writeSeriesBible(options: { idea?: string; parts: number }): Promise<SeriesBible> {

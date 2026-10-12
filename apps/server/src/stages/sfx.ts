@@ -51,7 +51,7 @@ For each scene choose ONE effect, or null.
 
 Return ONLY JSON: {"sfx": [...]} with exactly ${scenes.length} entries, each an effect name or null.`;
   try {
-    const { data } = await writeJson(prompt);
+    const { data } = await writeJson(prompt, undefined, undefined, { light: true });
     const chosen = (data as { sfx?: unknown }).sfx;
     if (!Array.isArray(chosen) || chosen.length !== story.scenes.length) return story;
     return storySchema.parse({

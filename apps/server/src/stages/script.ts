@@ -150,7 +150,7 @@ ${JSON.stringify(lines)}
 
 رجّع JSON بس بالشكل ده: {"lines": ["...", "..."]} بنفس عدد السطور (${lines.length}) وبنفس الترتيب.`;
   try {
-    const { data } = await writeJson(prompt);
+    const { data } = await writeJson(prompt, undefined, undefined, { light: true });
     const edited = (data as { lines?: unknown }).lines;
     const usable =
       Array.isArray(edited) &&

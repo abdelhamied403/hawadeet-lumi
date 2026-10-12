@@ -12,7 +12,7 @@ const CLIP_FRAMES = 4;
 const FRAME_WIDTH = 224;
 
 // Scenes looked at per request: with more pictures at once the checker skims them and misses changes.
-const BATCH = { images: 6, clips: 4 } as const;
+const BATCH = { images: 8, clips: 4 } as const;
 
 const RETRY_PAUSE_MS = 30_000;
 
