@@ -31,6 +31,7 @@ const CONNECTIONS = [
   { key: "gemini", name: "Google Gemini", role: "Writes the scripts and records the voice", setup: "GEMINI_API_KEY in the server's .env" },
   { key: "kaggle", name: "Kaggle", role: "Makes the images and motion clips on its free GPU", setup: "KAGGLE_USERNAME and KAGGLE_KEY in the server's .env" },
   { key: "facebook", name: "Facebook Page", role: "Posts the finished Reel automatically", setup: "FACEBOOK_PAGE_ID and FACEBOOK_PAGE_TOKEN in the server's .env, then restart the server" },
+  { key: "youtube", name: "YouTube channel", role: "Uploads each part as a Short, and the full story", setup: "YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET in the server's .env, then bun run youtube-connect" },
 ] as const;
 
 export default function SettingsScreen() {

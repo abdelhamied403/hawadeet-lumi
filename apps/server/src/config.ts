@@ -9,6 +9,10 @@ const envSchema = z.object({
   // Facebook Page publishing (optional until set up).
   FACEBOOK_PAGE_ID: z.string().min(1).optional(),
   FACEBOOK_PAGE_TOKEN: z.string().min(1).optional(),
+  // YouTube uploads (optional): an OAuth client from Google Cloud, and the refresh token `bun run youtube-connect` stores.
+  YOUTUBE_CLIENT_ID: z.string().min(1).optional(),
+  YOUTUBE_CLIENT_SECRET: z.string().min(1).optional(),
+  YOUTUBE_REFRESH_TOKEN: z.string().min(1).optional(),
   // Phone alerts through ntfy (optional): a private topic name that the owner's ntfy app subscribes to.
   NTFY_SERVER: z.string().default("https://ntfy.sh"),
   NTFY_TOPIC: z.string().min(8).optional(),

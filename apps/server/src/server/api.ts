@@ -13,7 +13,7 @@ import { authEnabled, login, loginSchema, logout, mediaToken, requireMediaAccess
 import { estimateStep } from "./estimates";
 import { totalPlays } from "../stages/analytics";
 import { AI_NOTE, POST_TEXT_MAX } from "../stages/posts";
-import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, createNextEpisode, draftPost, MODEL, publishEpisode, publishPost, rejectStep, rewritePost, takeReport, tick } from "./engine";
+import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, uploadFullStory, youtubeConnected, createNextEpisode, draftPost, MODEL, publishEpisode, publishPost, rejectStep, rewritePost, takeReport, tick } from "./engine";
 import {
   getEpisode,
   getPost,
@@ -223,6 +223,8 @@ async function presentFullStory(series: Series) {
     builtAt: built?.builtAt ?? null,
     ...(await fullStoryText(series)),
     youtubeUrl: series.fullStoryUrl,
+    // Whether the server can upload it itself; otherwise it is uploaded by hand.
+    canUpload: youtubeConnected,
   };
 }
 
@@ -253,6 +255,14 @@ app.post("/api/series/:id/full-story", async (context) => {
   if (listEpisodes({ seriesId: series.id, status: "published" }).length < 2) throw new HttpError(409, "The full story needs at least two published parts");
   void buildFullStory(series.id).catch((error) => console.error(`full story of series ${series.id}: ${error instanceof Error ? error.message : error}`));
   return context.json(await presentSeries(series), 202);
+});
+
+// Uploads the joined video to the connected YouTube channel and saves its link.
+app.post("/api/series/:id/full-story/upload", async (context) => {
+  const series = requireSeries(context.req.param("id"));
+  if (!youtubeConnected) throw new HttpError(409, "YouTube is not connected on the server");
+  await uploadFullStory(series.id);
+  return context.json(await presentSeries(requireSeries(context.req.param("id"))), 201);
 });
 
 // Saves where the full story was uploaded, so later descriptions can send viewers to it. An empty link clears it.
@@ -440,6 +450,7 @@ app.get("/api/settings", (context) =>
       kaggle: Boolean(config.KAGGLE_USERNAME && config.KAGGLE_KEY),
       gemini: Boolean(config.GEMINI_API_KEY),
       facebook: Boolean(config.FACEBOOK_PAGE_ID && config.FACEBOOK_PAGE_TOKEN),
+      youtube: youtubeConnected,
       alerts: alertsConfigured,
     },
     // What the owner's ntfy app subscribes to; null until NTFY_TOPIC is set.

@@ -69,7 +69,7 @@ export function PublishBench({ episode }: { episode: EpisodeDetail }) {
                   </Text>
                 )}
               </View>
-              {!result && <Body>{platform.key === "facebook" ? "Posts automatically once connected" : "You upload it yourself"}</Body>}
+              {!result && <Body>{platform.key === "tiktok" ? "You upload it yourself" : "Posts automatically once connected"}</Body>}
               {result?.detail && <Body className="text-xs">{result.detail}</Body>}
               {url && (
                 <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(url)} className="min-h-11 flex-row items-center gap-1.5 self-start">
@@ -80,7 +80,7 @@ export function PublishBench({ episode }: { episode: EpisodeDetail }) {
             </View>
           );
         })}
-        <Body className="text-xs">YouTube and TikTok keep uploads from unreviewed apps private, so those two are posted by hand. Send the video straight to their apps from here.</Body>
+        <Body className="text-xs">TikTok is posted by hand, and so is YouTube until its channel is connected. Send the video straight to their apps from here.</Body>
         {episode.videoUrl && (
           <Button
             label={share.isPending ? "Downloading the video" : "Send the video to an app"}

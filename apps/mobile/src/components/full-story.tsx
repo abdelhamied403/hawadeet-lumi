@@ -5,14 +5,14 @@ import * as Clipboard from "expo-clipboard";
 import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import { Controller, useForm } from "react-hook-form";
-import { Linking, Pressable, Text, View } from "react-native";
+import { Alert, Linking, Pressable, Text, View } from "react-native";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Body, FieldError, Meta } from "@/components/ui/text";
 import { errorMessage, mediaUrl } from "@/lib/http";
 import { toast } from "@/lib/toast";
-import { buildFullStory, saveFullStoryLink, type SeriesDetail } from "@/services/veogen";
+import { buildFullStory, saveFullStoryLink, uploadFullStory, type SeriesDetail } from "@/services/veogen";
 
 const YOUTUBE_UPLOAD = "https://www.youtube.com/upload";
 
@@ -41,6 +41,23 @@ export function FullStoryCard({ series }: { series: SeriesDetail }) {
 
   const build = useMutation({ mutationFn: () => buildFullStory(series.id), onSuccess: refresh, onError });
   const share = useMutation({ mutationFn: () => shareFullStory(series), onError });
+  const upload = useMutation({
+    mutationFn: () => uploadFullStory(series.id),
+    onSuccess: (fresh) => {
+      refresh(fresh);
+      toast("Uploaded to YouTube");
+    },
+    onError: (failure) => {
+      // An upload that YouTube kept private still saves its link, so the series is read again.
+      void queryClient.invalidateQueries({ queryKey: ["series", series.id] });
+      onError(failure);
+    },
+  });
+  const confirmUpload = () =>
+    Alert.alert("Upload to YouTube?", "The full story goes on your channel as a public video.", [
+      { text: "Not yet", style: "cancel" },
+      { text: "Upload", onPress: () => upload.mutate() },
+    ]);
   const form = useForm<LinkForm>({ resolver: zodResolver(linkSchema), defaultValues: { url: full.youtubeUrl ?? "" } });
   const saveLink = useMutation({
     mutationFn: (values: LinkForm) => saveFullStoryLink(series.id, { url: values.url.trim() }),
@@ -103,9 +120,15 @@ export function FullStoryCard({ series }: { series: SeriesDetail }) {
           </View>
 
           <View className="gap-2">
-            <Body>YouTube keeps uploads from unreviewed apps private, so this one is uploaded by hand.</Body>
+            <Body>{full.canUpload ? "Upload it to your channel from here, or send the video to the YouTube app yourself." : "YouTube is not connected on the server, so this one is uploaded by hand."}</Body>
             <View className="flex-row flex-wrap items-center gap-2">
-              <Button label={share.isPending ? "Downloading the video" : "Send the video to an app"} busy={share.isPending} onPress={() => share.mutate()} />
+              {full.canUpload && !full.youtubeUrl && <Button label={upload.isPending ? "Uploading" : "Upload to YouTube"} busy={upload.isPending} onPress={confirmUpload} />}
+              <Button
+                label={share.isPending ? "Downloading the video" : "Send the video to an app"}
+                variant={full.canUpload ? "outline" : "primary"}
+                busy={share.isPending}
+                onPress={() => share.mutate()}
+              />
               <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(YOUTUBE_UPLOAD)} className="min-h-11 flex-row items-center gap-1.5 px-2">
                 <Text className="font-sans-medium text-sm text-primary">Open the upload page</Text>
                 <Feather name="external-link" size={14} color="#e9a23b" />

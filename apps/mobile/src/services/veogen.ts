@@ -149,6 +149,8 @@ export type FullStory = {
   description: string;
   // Where it was uploaded, once the link is saved.
   youtubeUrl: string | null;
+  // True when the server is connected to YouTube and can upload it itself.
+  canUpload: boolean;
 };
 
 // An empty link clears the saved one.
@@ -190,7 +192,7 @@ export type Settings = {
 };
 
 export type SettingsResponse = Settings & {
-  connections: { kaggle: boolean; gemini: boolean; facebook: boolean; alerts: boolean };
+  connections: { kaggle: boolean; gemini: boolean; facebook: boolean; youtube: boolean; alerts: boolean };
   // What the ntfy app subscribes to; null until the server has a topic.
   alertsTopic: { server: string; topic: string } | null;
 };
@@ -236,6 +238,11 @@ export async function updateSeries(id: number, payload: UpdateSeriesPayload): Pr
 // Starts joining the published parts into one video; the series reports `building` until it is there.
 export async function buildFullStory(id: number): Promise<SeriesDetail> {
   return (await veogenHttp.post<SeriesDetail>(`/api/series/${id}/full-story`)).data;
+}
+
+// Uploads the joined video to the connected YouTube channel; the series comes back with its link saved.
+export async function uploadFullStory(id: number): Promise<SeriesDetail> {
+  return (await veogenHttp.post<SeriesDetail>(`/api/series/${id}/full-story/upload`)).data;
 }
 
 export async function saveFullStoryLink(id: number, payload: SaveFullStoryLinkPayload): Promise<SeriesDetail> {

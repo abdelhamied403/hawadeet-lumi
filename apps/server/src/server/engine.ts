@@ -4,6 +4,7 @@ import { config } from "../config";
 import { paths, saveStory } from "../lib/project";
 import { publishPagePost, publishReel } from "../services/facebook";
 import { sendAlert, type SendAlertPayload } from "../services/ntfy";
+import { refreshAccessToken, uploadVideo } from "../services/youtube";
 import { collectReport, summarizeReport } from "../stages/analytics";
 import { runFullStory } from "../stages/fullstory";
 import { runAssemble } from "../stages/assemble";
@@ -33,6 +34,7 @@ import {
   saveEpisodeStory,
   saveReport,
   setEpisodeStatus,
+  setSeriesFullStoryUrl,
   setSeriesStatus,
   STEP_NAMES,
   updatePost,
@@ -511,6 +513,30 @@ export async function buildDescription(episode: Episode): Promise<string> {
     .join("\n\n");
 }
 
+export const youtubeConnected = Boolean(config.YOUTUBE_CLIENT_ID && config.YOUTUBE_CLIENT_SECRET && config.YOUTUBE_REFRESH_TOKEN);
+
+// Uploads a finished video to the connected YouTube channel. A vertical video under three minutes becomes a Short.
+async function uploadToYoutube(video: { path: string; title: string; description: string; hashtags: string[] }) {
+  if (!config.YOUTUBE_CLIENT_ID || !config.YOUTUBE_CLIENT_SECRET || !config.YOUTUBE_REFRESH_TOKEN) throw new Error("YouTube is not connected yet (see Settings)");
+  const accessToken = await refreshAccessToken({
+    clientId: config.YOUTUBE_CLIENT_ID,
+    clientSecret: config.YOUTUBE_CLIENT_SECRET,
+    refreshToken: config.YOUTUBE_REFRESH_TOKEN,
+  });
+  const uploaded = await uploadVideo({
+    accessToken,
+    videoPath: video.path,
+    title: video.title,
+    description: video.description,
+    tags: video.hashtags.map((tag) => tag.replace(/^#/, "").replace(/_/g, " ")).filter(Boolean),
+  });
+  return {
+    url: uploaded.url,
+    // YouTube can hold uploads from an app it has not reviewed as private, whatever was asked for.
+    detail: uploaded.privacy === "public" ? undefined : `YouTube saved it as ${uploaded.privacy}. Open it in YouTube Studio to make it public.`,
+  };
+}
+
 export const fullStoryPaths = (seriesId: number) => {
   const dir = `${OUTPUT_DIR}/series/s${seriesId}`;
   return { video: `${dir}/full-story.mp4`, parts: `${dir}/full-story.json` };
@@ -543,6 +569,19 @@ export async function buildFullStory(seriesId: number): Promise<number[]> {
   } finally {
     fullStoryBuilds.delete(seriesId);
   }
+}
+
+// Uploads the joined video to YouTube and remembers its link, which later descriptions send viewers to.
+export async function uploadFullStory(seriesId: number): Promise<string> {
+  const series = getSeries(seriesId);
+  if (!series) throw new Error("No such series");
+  const video = fullStoryPaths(seriesId).video;
+  if (fullStoryBuilds.has(seriesId) || !(await Bun.file(video).exists())) throw new Error("Join the parts first");
+  const text = await fullStoryText(series);
+  const uploaded = await uploadToYoutube({ path: video, title: text.title, description: text.description, hashtags: series.bible.hashtags });
+  setSeriesFullStoryUrl(seriesId, uploaded.url);
+  if (uploaded.detail) throw new Error(`Uploaded, but ${uploaded.detail}`);
+  return uploaded.url;
 }
 
 // Title and description for the joined video.
@@ -592,13 +631,26 @@ export async function publishEpisode(episodeId: number): Promise<void> {
   } else {
     published.facebook = { status: "manual", detail: "Facebook is not connected yet (see Settings)." };
   }
-  // These two keep uploads from unreviewed apps private, so they are posted by hand for now.
-  published.youtube = { status: "manual", url: "https://www.youtube.com/upload" };
+  // TikTok keeps uploads from unreviewed apps private, so it is posted by hand.
   published.tiktok = { status: "manual", url: "https://www.tiktok.com/tiktokstudio/upload" };
+  const manualYoutube = { status: "manual", url: "https://www.youtube.com/upload" };
+  // A part that already reached YouTube on an earlier try is not uploaded twice.
+  const earlier = getStep(episodeId, "publish").meta.published?.youtube;
+  published.youtube = earlier?.status === "posted" ? earlier : manualYoutube;
 
   if (published.facebook.status === "failed") {
     updateStep(episodeId, "publish", { status: "review", error: published.facebook.detail ?? null, meta: { published } });
     return;
+  }
+  // YouTube goes after Facebook has succeeded, so a failed Facebook post never leaves a lone upload behind.
+  if (youtubeConnected && published.youtube.status !== "posted") {
+    try {
+      const uploaded = await uploadToYoutube({ path: videoPath, title: episode.story?.title ?? "", description, hashtags: episode.story?.hashtags ?? [] });
+      published.youtube = { status: "posted", ...uploaded };
+    } catch (error) {
+      // The part is out on Facebook; YouTube can still be done by hand from the same screen.
+      published.youtube = { ...manualYoutube, detail: `The automatic upload failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500) };
+    }
   }
   updateStep(episodeId, "publish", { status: "approved", meta: { published } });
   setEpisodeStatus(episodeId, "published");

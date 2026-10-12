@@ -42,3 +42,9 @@ export const uploadHttp = axios.create({ timeout: 20 * 60_000, maxBodyLength: In
 
 // ntfy, which delivers alerts to the owner's phone. The topic is part of each message.
 export const ntfyHttp = axios.create({ baseURL: config.NTFY_SERVER, timeout: 20_000 });
+
+// Google's OAuth token endpoint, used to turn the stored YouTube refresh token into a short-lived access token.
+export const googleAuthHttp = axios.create({ baseURL: "https://oauth2.googleapis.com", timeout: 30_000 });
+
+// YouTube Data API. The access token is passed per request; video bytes go through uploadHttp.
+export const youtubeHttp = axios.create({ baseURL: "https://www.googleapis.com", timeout: 60_000 });
