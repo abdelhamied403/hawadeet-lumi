@@ -1,14 +1,14 @@
 import { Feather } from "@expo/vector-icons";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
-import { Linking, Pressable, Text, View } from "react-native";
+import { Alert, Linking, Pressable, Text, View } from "react-native";
 import { Button } from "@/components/ui/button";
 import { Body } from "@/components/ui/text";
 import { errorMessage, mediaUrl } from "@/lib/http";
 import { toast } from "@/lib/toast";
-import type { EpisodeDetail, PublishResult } from "@/services/veogen";
+import { uploadEpisodeToYoutube, type EpisodeDetail, type PublishResult } from "@/services/veogen";
 
 const PLATFORMS: { key: string; name: string }[] = [
   { key: "facebook", name: "Facebook Reels" },
@@ -35,7 +35,24 @@ async function shareVideo(episode: EpisodeDetail): Promise<void> {
 export function PublishBench({ episode }: { episode: EpisodeDetail }) {
   const step = episode.steps.find((candidate) => candidate.name === "publish");
   const results = step?.meta.published;
+  const queryClient = useQueryClient();
   const share = useMutation({ mutationFn: () => shareVideo(episode), onError: (error) => toast(errorMessage(error)) });
+  const youtube = useMutation({
+    mutationFn: () => uploadEpisodeToYoutube(episode.id),
+    onSuccess: (fresh) => {
+      queryClient.setQueryData(["episode", episode.id], fresh);
+      void queryClient.invalidateQueries({ queryKey: ["episode", episode.id] });
+      toast("Uploaded to YouTube");
+    },
+    onError: (error) => toast(errorMessage(error)),
+  });
+  // A part that is already out but never reached YouTube can be sent there now.
+  const canSendToYoutube = episode.youtubeConnected && episode.status === "published" && results?.youtube?.status !== "posted";
+  const confirmYoutube = () =>
+    Alert.alert("Upload to YouTube?", "This part goes on your channel as a public Short.", [
+      { text: "Not yet", style: "cancel" },
+      { text: "Upload", onPress: () => youtube.mutate() },
+    ]);
 
   const copy = async () => {
     await Clipboard.setStringAsync(episode.description);
@@ -71,6 +88,9 @@ export function PublishBench({ episode }: { episode: EpisodeDetail }) {
               </View>
               {!result && <Body>{platform.key === "tiktok" ? "You upload it yourself" : "Posts automatically once connected"}</Body>}
               {result?.detail && <Body className="text-xs">{result.detail}</Body>}
+              {platform.key === "youtube" && canSendToYoutube && (
+                <Button label={youtube.isPending ? "Uploading" : "Upload to YouTube"} size="sm" busy={youtube.isPending} onPress={confirmYoutube} className="mt-1 self-start" />
+              )}
               {url && (
                 <Pressable accessibilityRole="link" onPress={() => void Linking.openURL(url)} className="min-h-11 flex-row items-center gap-1.5 self-start">
                   <Text className="font-sans-medium text-sm text-primary">{result.status === "posted" ? "View the post" : "Open the upload page"}</Text>

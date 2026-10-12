@@ -537,6 +537,30 @@ async function uploadToYoutube(video: { path: string; title: string; description
   };
 }
 
+const youtubeUploads = new Set<number>();
+
+// Sends a part that is already published elsewhere to YouTube, for parts that went out before the channel
+// was connected or whose automatic upload failed.
+export async function uploadEpisodeToYoutube(episodeId: number): Promise<void> {
+  const episode = getEpisode(episodeId);
+  if (!episode || episode.status !== "published") throw new Error("Only a published part can be sent to YouTube from here");
+  const published = getStep(episodeId, "publish").meta.published ?? {};
+  if (published.youtube?.status === "posted") throw new Error("This part is already on YouTube");
+  if (youtubeUploads.has(episodeId)) throw new Error("This part is being uploaded right now");
+  youtubeUploads.add(episodeId);
+  try {
+    const uploaded = await uploadToYoutube({
+      path: paths.final(episode.dir, MODEL),
+      title: episode.story?.title ?? "",
+      description: await buildDescription(episode),
+      hashtags: episode.story?.hashtags ?? [],
+    });
+    updateStep(episodeId, "publish", { meta: { published: { ...published, youtube: { status: "posted", ...uploaded } } } });
+  } finally {
+    youtubeUploads.delete(episodeId);
+  }
+}
+
 export const fullStoryPaths = (seriesId: number) => {
   const dir = `${OUTPUT_DIR}/series/s${seriesId}`;
   return { video: `${dir}/full-story.mp4`, parts: `${dir}/full-story.json` };

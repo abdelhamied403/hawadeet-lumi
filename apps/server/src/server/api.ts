@@ -13,7 +13,7 @@ import { authEnabled, login, loginSchema, logout, mediaToken, requireMediaAccess
 import { estimateStep } from "./estimates";
 import { totalPlays } from "../stages/analytics";
 import { AI_NOTE, POST_TEXT_MAX } from "../stages/posts";
-import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, uploadFullStory, youtubeConnected, createNextEpisode, draftPost, MODEL, publishEpisode, publishPost, rejectStep, rewritePost, takeReport, tick } from "./engine";
+import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, uploadFullStory, youtubeConnected, createNextEpisode, draftPost, MODEL, publishEpisode, publishPost, rejectStep, rewritePost, takeReport, tick, uploadEpisodeToYoutube } from "./engine";
 import {
   getEpisode,
   getPost,
@@ -113,6 +113,8 @@ async function detail(episode: Episode) {
     narrationUrl: await versioned(paths.narration(episode.dir)),
     videoUrl: await versioned(paths.final(episode.dir, MODEL)),
     description: await buildDescription(episode),
+    // Whether the server can upload this part to YouTube itself.
+    youtubeConnected,
     musicTracks: await listMusic(),
     soundEffects: SFX,
   };
@@ -349,6 +351,14 @@ app.post("/api/episodes/:id/publish", async (context) => {
   const episode = requireEpisode(context.req.param("id"));
   await publishEpisode(episode.id);
   return context.json(await detail(requireEpisode(context.req.param("id"))));
+});
+
+// Sends an already published part to the connected YouTube channel.
+app.post("/api/episodes/:id/youtube", async (context) => {
+  const episode = requireEpisode(context.req.param("id"));
+  if (!youtubeConnected) throw new HttpError(409, "YouTube is not connected on the server");
+  await uploadEpisodeToYoutube(episode.id);
+  return context.json(await detail(requireEpisode(context.req.param("id"))), 201);
 });
 
 app.post("/api/episodes/:id/cancel", async (context) => {

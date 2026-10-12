@@ -100,6 +100,8 @@ export type EpisodeDetail = Omit<EpisodeSummary, "steps"> & {
   narrationUrl: string | null;
   videoUrl: string | null;
   description: string;
+  // True when the server is connected to YouTube and can upload the part itself.
+  youtubeConnected: boolean;
   musicTracks: string[];
   // Available sound effects: name -> what it sounds like.
   soundEffects: Record<string, string>;
@@ -278,6 +280,11 @@ export async function rejectStep(id: number, step: StepName, payload: RejectStep
 
 export async function publishEpisode(id: number): Promise<EpisodeDetail> {
   return (await veogenHttp.post<EpisodeDetail>(`/api/episodes/${id}/publish`)).data;
+}
+
+// Sends an already published part to the connected YouTube channel.
+export async function uploadEpisodeToYoutube(id: number): Promise<EpisodeDetail> {
+  return (await veogenHttp.post<EpisodeDetail>(`/api/episodes/${id}/youtube`)).data;
 }
 
 export async function cancelEpisode(id: number): Promise<EpisodeSummary> {
