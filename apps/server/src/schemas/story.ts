@@ -27,6 +27,13 @@ export const castMemberSchema = z.object({
   voice: z.string().default(""),
 });
 
+export const placeSchema = z.object({
+  // Short Latin name, used to point a scene at the place (e.g. "Corridor").
+  name: z.string().regex(/^[A-Za-z]+$/, "Use letters only, no spaces"),
+  // English: what the place looks like and the state its doors and objects are in, added to every image set there.
+  look: z.string().min(1),
+});
+
 export const sceneSchema = z
   .object({
     // Everything spoken in the scene, joined. Kept in step with `lines` automatically.
@@ -39,6 +46,8 @@ export const sceneSchema = z
     // Their fixed looks are added to the image prompt from this list. Older stories have none, and get
     // the main character's look in every image.
     shows: z.array(z.string()).optional(),
+    // Name of the place the image is set in; its fixed look is added to the image prompt. Older stories have none.
+    place: z.string().nullable().default(null),
     // English prompt describing how the image should move.
     motionPrompt: z.string().min(1),
     // Name of a sound effect from assets/sfx played in this scene, if any.
@@ -62,6 +71,8 @@ export const storySchema = z.object({
   seed: z.number().int().default(1234),
   // Characters who speak besides the narrator.
   cast: z.array(castMemberSchema).default([]),
+  // The places the story happens in, each with one fixed look.
+  places: z.array(placeSchema).default([]),
   scenes: z.array(sceneSchema).min(1),
 });
 
@@ -70,7 +81,7 @@ export function spokenName(name: string): string {
   return name.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
-// The full prompt for a scene's image: the moment, then the fixed look of each person in it, then the style.
+// The full prompt for a scene's image: the moment, the fixed look of the place and of each person in it, then the style.
 export function buildImagePrompt(story: Story, scene: Scene): string {
   const looks = scene.shows
     ? scene.shows.map((who) => {
@@ -79,13 +90,15 @@ export function buildImagePrompt(story: Story, scene: Scene): string {
         return member ? `${spokenName(member.name)}: ${member.look}` : "";
       })
     : [story.characterSheet];
-  return [scene.imagePrompt, ...looks, story.styleSheet]
+  const place = story.places.find((candidate) => candidate.name === scene.place);
+  return [scene.imagePrompt, place ? `The place: ${place.look}` : "", ...looks, story.styleSheet]
     .filter(Boolean)
     .map((part) => part.trim().replace(/\.$/, ""))
     .join(". ");
 }
 
 export type Line = z.infer<typeof lineSchema>;
+export type Place = z.infer<typeof placeSchema>;
 export type CastMember = z.infer<typeof castMemberSchema>;
 export type Scene = z.infer<typeof sceneSchema>;
 export type Story = z.infer<typeof storySchema>;

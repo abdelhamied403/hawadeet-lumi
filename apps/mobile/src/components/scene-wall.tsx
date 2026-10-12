@@ -29,9 +29,19 @@ export function SceneWall({
   selectable: boolean;
 }) {
   const [viewing, setViewing] = useState<EpisodeScene | null>(null);
+  const problemKey = kind === "images" ? "imageProblem" : "clipProblem";
+  const flagged = episode.scenes.filter((scene) => scene[problemKey]).length;
   return (
     <View className="gap-4">
       {selectable && <Body>Tap a frame to see it full screen. Mark any scene that looks wrong: only marked scenes are redone, which saves GPU time.</Body>}
+      {flagged > 0 && (
+        <View className="flex-row items-start gap-2 rounded-md border border-primary/40 bg-primary/10 p-3">
+          <Feather name="alert-triangle" size={16} color="#e9a23b" style={{ marginTop: 2 }} />
+          <Body className="flex-1">
+            {`The automatic check flagged ${flagged} ${flagged === 1 ? "scene" : "scenes"} that may not show what ${flagged === 1 ? "its line says" : "their lines say"}. Nothing is redone until you mark it.`}
+          </Body>
+        </View>
+      )}
       <View className="flex-row flex-wrap justify-between gap-y-3">
         {episode.scenes.map((scene) => (
           <SceneFrame
@@ -82,9 +92,10 @@ function SceneFrame({
   const made = kind === "images" ? scene.imageUrl : scene.clipUrl;
   // A clip shows its still image until it is opened.
   const still = mediaUrl(scene.imageUrl);
+  const problem = kind === "images" ? scene.imageProblem : scene.clipProblem;
 
   return (
-    <View className={`w-[48.5%] gap-2 rounded-md border bg-card p-2 ${marked ? "border-primary" : "border-border"}`}>
+    <View className={`w-[48.5%] gap-2 rounded-md border bg-card p-2 ${marked ? "border-primary" : problem ? "border-primary/40" : "border-border"}`}>
       <Pressable
         accessibilityRole="imagebutton"
         accessibilityLabel={`Scene ${scene.number}${made ? `, open ${kind === "images" ? "image" : "clip"}` : ", not made yet"}`}
@@ -110,6 +121,12 @@ function SceneFrame({
       <Arabic numberOfLines={2} className="text-base leading-7 text-muted-foreground">
         {scene.narration}
       </Arabic>
+      {problem && (
+        <View className="flex-row items-start gap-1.5">
+          <Feather name="alert-triangle" size={12} color="#e9a23b" style={{ marginTop: 3 }} />
+          <Text className="flex-1 font-sans text-xs leading-4 text-primary">{problem}</Text>
+        </View>
+      )}
       {selectable && (
         <Button
           label={marked ? "Marked for redo" : "Redo this scene"}

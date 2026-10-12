@@ -76,6 +76,8 @@ export const stepMetaSchema = z.object({
   // How many times the step has been rejected; varies the image seed.
   attempt: z.number().int().default(0),
   jobUrl: z.string().optional(),
+  // Scenes the automatic check found not to match what they should show; shown to the owner at review.
+  flags: z.array(z.object({ scene: z.number().int(), problem: z.string() })).optional(),
   startedAt: z.string().optional(),
   musicTrack: z.string().optional(),
   musicVolume: z.number().optional(),

@@ -90,6 +90,9 @@ export type EpisodeScene = StoryScene & {
   audioSeconds: number | null;
   imageUrl: string | null;
   clipUrl: string | null;
+  // What the automatic check found wrong with the scene's image or clip; null when it found nothing.
+  imageProblem: string | null;
+  clipProblem: string | null;
 };
 
 export type EpisodeDetail = Omit<EpisodeSummary, "steps"> & {

@@ -1,6 +1,6 @@
 import { saveStory } from "../lib/project";
 import { writeJson } from "../lib/story-model";
-import { HERO, NARRATOR, storySchema, type CastMember, type Story } from "../schemas/story";
+import { HERO, NARRATOR, storySchema, type CastMember, type Place, type Story } from "../schemas/story";
 
 const MAX_ATTEMPTS = 3;
 // A motion clip lasts about five seconds, so each scene's narration has to be speakable in that time.
@@ -8,6 +8,9 @@ export const MAX_WORDS_PER_SCENE = 9;
 
 // The first line has to land before a scrolling viewer leaves, so it is shorter than the others.
 export const MAX_WORDS_OPENING = 6;
+
+// An image description shorter than this leaves the picture to chance, and the image model fills it with something else.
+export const MIN_WORDS_IMAGE = 45;
 
 export const OPENING_RULES = `The opening decides everything. Most viewers are strangers scrolling past who have seen no other part, and they leave within three seconds unless something is already wrong on screen.
 - Scene 1 is a cold open INSIDE the first frightening moment: its image is a close shot of the one thing that should not be there or should not be happening (prints on the floor, a door standing open, a shape at the end of the corridor), and its line names that thing in ${MAX_WORDS_OPENING} words or fewer.
@@ -19,9 +22,17 @@ export const OPENING_RULES = `The opening decides everything. Most viewers are s
 export const SCENE_RULES = `Rules for every scene:
 - "lines": what is spoken in the scene, in order, as [{"speaker": "...", "text": "..."}]. Usually ONE line by "Narrator". All the lines of a scene together are STRICTLY ${MAX_WORDS_PER_SCENE} words or fewer.
 - "text": Egyptian colloquial Arabic (عامية مصرية), the way people really say it out loud. Use "…" for dramatic pauses. No English, no digits, no emojis. Natural everyday Egyptian words, never stiff formal Arabic.
-- "imagePrompt" (ENGLISH): one frozen moment that shows exactly what is being said: shot type, who is there and what they are doing, the setting, the light. Call the main character "the young man" / "the young woman". Do NOT describe anyone's face, hair, age or clothes: each person's fixed look is added automatically from "shows". Describe only what IS in the picture, never what is absent. Never ask for text, captions or logos in the image.
+- Every line must be something a camera can SHOW at that moment: a person doing something, or a thing that can be seen. A line about a feeling, a sound or a thought is written as what it makes someone visibly do ("I froze" is a man stopped mid-step with his hand in the air, not "fear"). Never write a line whose picture would have to be vague ("the darkness gathered", "shapes formed").
+- "place": the exact name of the place the image is set in, from the list of places below, or null only when the frame is filled by one object and no surroundings can be seen.
+- "imagePrompt" (ENGLISH, 60 to 100 words): one frozen moment that shows exactly what the line says, described so completely that two painters would paint the same picture. In this order:
+  1. The shot: its size (extreme close-up, close-up, medium, wide), the camera height and angle, and what is nearest the camera.
+  2. Who is in it and their exact pose: where they stand in the frame, which way the body and the face are turned, where the eyes look, what each hand is doing, the expression. Call the main character "the young man" / "the young woman".
+  3. The one object or detail the line is about, where it is in the frame and its exact state ("the door opposite is shut, its rusty padlock hanging closed", "the brass peephole at eye level, dark").
+  4. What is behind and around them, taken from the place, with the same doors, walls and objects in the same state as the story left them. Say of every door in the frame whether it is shut or open: a door that is locked in the story is shut in every picture.
+  5. The light: its source, its colour, where the shadows fall.
+  Do NOT describe anyone's face, hair, age or clothes: each person's fixed look is added automatically from "shows". Describe only what IS in the picture, never what is absent, and nothing the story has not revealed yet. What a character sees through a peephole, a keyhole or a gap is described as concretely as any other picture: the actual room, the actual thing in it. Never ask for text, captions or logos in the image.
 - "shows": the people visible in that image, as a list: "${HERO}" for the main character, plus the exact name of any other character. Only people really in frame: a close-up of an object, a hand, feet or a door is []. Most images show ONE person.
-- "motionPrompt" (ENGLISH): what moves during the 5 seconds: ONE simple, slow physical action, naming who or what does it ("the young man", "the padlock", never "he"). It must start from the image as described, involve only what is in that image, and be physically plausible. The camera is fixed or pushes in very slowly: no pans, tilts or orbits, and nothing new comes into view.
+- "motionPrompt" (ENGLISH, 30 to 60 words): what happens during the 5 seconds, taken from the line: the ONE physical action the line describes, from its start to its end ("the young man takes two slow steps toward the door and stops with his hand an inch from the wood"), naming who or what does it ("the young man", "the padlock", never "he"). When someone says the line aloud, they are seen saying it. It must start from the image as described, involve only what is in that image, and be physically plausible. The camera is fixed or pushes in very slowly: no pans, tilts or orbits, and nothing new comes into view.
 - Psychological, eerie horror: no gore, no harm to children, no real people, places or brands.`;
 
 export function dialogueRules(cast: CastMember[]): string {
@@ -37,6 +48,12 @@ Dialogue rules:
 - A dialogue scene is one short line, or a two-line exchange between two speakers, and still ${MAX_WORDS_PER_SCENE} words or fewer in total.
 - Conversations run across several scenes: one scene asks, the next answers. Lines must sound like real Egyptians talking, with hesitations and unfinished sentences.
 - In a scene where a character speaks, the image shows that character: name them in the imagePrompt with their name written as words (e.g. "Amm Ahmed") and list them in "shows".`;
+}
+
+export function placeRules(places: Place[]): string {
+  if (places.length === 0) return "";
+  return `Places, using exactly these names in "place". Each keeps this one look in every image set there:
+${places.map((place) => `- "${place.name}": ${place.look}`).join("\n")}`;
 }
 
 export function wordCount(text: string): number {
@@ -60,6 +77,10 @@ export function storyProblem(story: Story, scenes: number): string | null {
   if (story.scenes.some((scene) => !scene.shows)) return `a scene is missing its "shows" list`;
   const strangers = story.scenes.flatMap((scene) => scene.shows ?? []).find((who) => who !== HERO && !story.cast.some((member) => member.name === who));
   if (strangers) return `unknown name "${strangers}" in "shows"`;
+  const thin = story.scenes.findIndex((scene) => scene.imagePrompt.split(/\s+/).length < MIN_WORDS_IMAGE);
+  if (thin >= 0) return `the "imagePrompt" of scene ${thin + 1} is under ${MIN_WORDS_IMAGE} words; every one needs the shot, the pose, the object and its state, the surroundings and the light`;
+  const nowhere = story.scenes.find((scene) => scene.place && !story.places.some((place) => place.name === scene.place));
+  if (nowhere) return `unknown place "${nowhere.place}"`;
   if (story.cast.length > 0) {
     const spoken = story.scenes.filter((scene) => scene.lines.some((line) => line.speaker !== NARRATOR)).length;
     if (spoken < story.scenes.length * MIN_DIALOGUE_SHARE) return `only ${spoken} of ${story.scenes.length} scenes have dialogue`;
@@ -83,6 +104,7 @@ ${dialogueRules([])}
 Also write (in ENGLISH):
 - "characterSheet": one sentence fixing the main character's look (age, hair, face, clothes), reused for every image.
 - "styleSheet": one sentence fixing the look of every image: cinematic horror film still, photorealistic, lens, colour palette, lighting, film grain, vertical composition.
+- "places": the one to three places the story happens in, each with a name (one Latin word) and a "look" of two or three sentences fixing its walls, floor, doors (material, colour, which are shut), furniture and light, reused for every image set there.
 
 Return ONLY JSON with this shape:
 {
@@ -92,7 +114,8 @@ Return ONLY JSON with this shape:
   "hashtags": ["#رعب", "..."],
   "characterSheet": "...",
   "styleSheet": "...",
-  "scenes": [{ "lines": [{ "speaker": "Narrator", "text": "..." }], "imagePrompt": "...", "shows": ["Hero"], "motionPrompt": "..." }]
+  "places": [{ "name": "Corridor", "look": "..." }],
+  "scenes": [{ "lines": [{ "speaker": "Narrator", "text": "..." }], "place": "Corridor", "imagePrompt": "...", "shows": ["Hero"], "motionPrompt": "..." }]
 }
 with exactly ${scenes} scenes.`;
 }

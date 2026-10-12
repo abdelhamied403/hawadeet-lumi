@@ -1,6 +1,7 @@
-import { rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { format } from "date-fns";
 import { config } from "../config";
+import { ffmpeg } from "../lib/ffmpeg";
 import { paths, saveStory } from "../lib/project";
 import { publishPagePost, publishReel } from "../services/facebook";
 import { sendAlert, type SendAlertPayload } from "../services/ntfy";
@@ -9,10 +10,11 @@ import { collectReport, collectYoutube, summarizeReport } from "../stages/analyt
 import { runFullStory } from "../stages/fullstory";
 import { runAssemble } from "../stages/assemble";
 import { SFX_CREDITS } from "../stages/sfx";
+import { checkScenes, type SceneFlag } from "../stages/check";
 import { directMotion } from "../stages/motion";
 import { AI_NOTE, writePagePost, type PostStill } from "../stages/posts";
 import { fetchRender, pushRender, type MotionModel } from "../stages/render";
-import { writeSeriesBible, writeSeriesPart } from "../stages/series";
+import { writePlaces, writeSeriesBible, writeSeriesPart } from "../stages/series";
 import { runVoice } from "../stages/voice";
 import {
   createEpisode,
@@ -35,6 +37,7 @@ import {
   saveReport,
   setEpisodeStatus,
   setSeriesFullStoryUrl,
+  saveSeriesBible,
   setSeriesStatus,
   STEP_NAMES,
   updatePost,
@@ -90,7 +93,7 @@ function alertStep(episodeId: number, step: StepName, outcome: "review" | "faile
     outcome === "failed" ? `Part ${part}: ${STEP_LABELS[step]} failed` : step === "publish" ? `Part ${part} is ready to publish` : `Part ${part}: ${STEP_LABELS[step]} ready for review`;
   void alert({
     title,
-    message: outcome === "failed" ? (detail ?? "Open the part to see what went wrong.").slice(0, 300) : "Open Veogen to review it.",
+    message: outcome === "failed" ? (detail ?? "Open the part to see what went wrong.").slice(0, 300) : `${detail ? `${detail} ` : ""}Open Veogen to review it.`,
     click: `veogen://episodes/${episodeId}`,
     tags: [outcome === "failed" ? "warning" : "clapper"],
     priority: outcome === "failed" ? 4 : 3,
@@ -124,6 +127,23 @@ function runLocal(episode: Episode, step: StepName, work: () => Promise<void>): 
     .finally(() => localTasks.delete(key));
 }
 
+// A few stills from the parts already made, so places described later match what viewers have seen.
+async function publishedStills(seriesId: number): Promise<Buffer[]> {
+  const stills: Buffer[] = [];
+  const made = listEpisodes({ seriesId }).filter((other) => other.status !== "cancelled" && other.story).sort((a, b) => b.partNumber - a.partNumber);
+  for (const other of made.slice(0, 2)) {
+    for (const scene of [2, 5, 9, 14]) {
+      const source = `${paths.renderDir(other.dir, MODEL)}/images/scene-${String(scene).padStart(2, "0")}.png`;
+      if (!(await Bun.file(source).exists())) continue;
+      const jpeg = `${paths.workDir(other.dir, "places")}/scene-${String(scene).padStart(2, "0")}.jpg`;
+      await mkdir(paths.workDir(other.dir, "places"), { recursive: true });
+      await ffmpeg(["-i", source, "-vf", "scale=384:-2", "-q:v", "6", jpeg]);
+      stills.push(Buffer.from(await Bun.file(jpeg).arrayBuffer()));
+    }
+  }
+  return stills;
+}
+
 async function writeStory(episode: Episode, meta: StepMeta): Promise<void> {
   const series = getSeries(episode.seriesId);
   if (!series) throw new Error("The episode's series no longer exists");
@@ -134,8 +154,14 @@ async function writeStory(episode: Episode, meta: StepMeta): Promise<void> {
       number: other.partNumber,
       narration: (other.story?.scenes ?? []).map((scene) => scene.narration).join(" "),
     }));
+  // A series planned before places had fixed looks gets them once, and keeps them for every later part.
+  let bible = series.bible;
+  if (bible.places.length === 0) {
+    bible = { ...bible, places: await writePlaces(bible, previous, await publishedStills(series.id)) };
+    saveSeriesBible(series.id, bible);
+  }
   const story = await writeSeriesPart({
-    bible: series.bible,
+    bible,
     partNumber: episode.partNumber,
     scenes: getSettings().scenesPerPart,
     previous,
@@ -185,6 +211,22 @@ async function startRender(episode: Episode, step: "images" | "clips", meta: Ste
   }
 }
 
+// Has the scenes that were just made looked at; flags for scenes that were not redone are kept.
+// A check that cannot run never holds up the review: the step simply arrives without new flags.
+async function checkRender(episode: Episode, step: "images" | "clips"): Promise<SceneFlag[]> {
+  const meta = getStep(episode.id, step).meta;
+  const redone = meta.scenes?.length ? meta.scenes : sceneNumbers(episode);
+  const kept = (meta.flags ?? []).filter((flag) => !redone.includes(flag.scene));
+  if (!episode.story) return kept;
+  try {
+    const found = await checkScenes(episode.dir, episode.story, { model: MODEL, kind: step, scenes: redone });
+    return [...kept, ...found].sort((a, b) => a.scene - b.scene);
+  } catch (error) {
+    console.error(`episode ${episode.id} ${step} check: ${error instanceof Error ? error.message : error}`);
+    return kept;
+  }
+}
+
 async function pollRender(episode: Episode, step: "images" | "clips"): Promise<void> {
   const key = taskKey(episode.id, step);
   if (Date.now() - (lastPoll.get(key) ?? 0) < KAGGLE_POLL_MS) return;
@@ -201,8 +243,9 @@ async function pollRender(episode: Episode, step: "images" | "clips"): Promise<v
       if (!(await Bun.file(file).exists())) missing.push(scene);
     }
     if (missing.length === 0) {
-      updateStep(episode.id, step, { status: "review", error: null });
-      alertStep(episode.id, step, "review");
+      const flags = await checkRender(episode, step);
+      updateStep(episode.id, step, { status: "review", error: null, meta: { flags } });
+      alertStep(episode.id, step, "review", flags.length ? `The check flagged ${flags.length === 1 ? "scene" : "scenes"} ${flags.map((flag) => flag.scene).join(", ")}.` : undefined);
     } else {
       fail(episode.id, step, `The Kaggle job ended (${result.status}) without scenes ${missing.join(", ")}.\n${result.logTail}`);
     }

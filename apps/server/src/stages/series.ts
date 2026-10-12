@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { writeJson } from "../lib/story-model";
 import { config } from "../config";
-import { castMemberSchema, sceneSchema, storySchema, type CastMember, type Story } from "../schemas/story";
-import { dialogueRules, OPENING_RULES, proofreadStory, SCENE_RULES, storyProblem } from "./script";
+import { castMemberSchema, placeSchema, sceneSchema, storySchema, type CastMember, type Place, type Story } from "../schemas/story";
+import { dialogueRules, OPENING_RULES, placeRules, proofreadStory, SCENE_RULES, storyProblem } from "./script";
 import { assignSfx } from "./sfx";
 
 const MAX_ATTEMPTS = 3;
@@ -16,6 +16,8 @@ export const seriesBibleSchema = z.object({
   hashtags: z.array(z.string()).default([]),
   // Characters who speak besides the narrator; each keeps one voice for the whole series.
   cast: z.array(castMemberSchema).max(2).default([]),
+  // The places the series happens in; each keeps one look for the whole series.
+  places: z.array(placeSchema).max(5).default([]),
   parts: z
     .array(
       z.object({
@@ -50,6 +52,27 @@ export function assignVoices(cast: CastMember[]): CastMember[] {
 
 const CAST_SHAPE = `"cast": [{ "name": "one Latin word used as the speaker label, e.g. UmmHassan", "nameArabic": "the name in Arabic", "gender": "male" | "female", "age": "young" | "adult" | "old", "role": "ENGLISH, who they are and how they speak", "look": "ENGLISH, one precise sentence fixing their appearance so they are the same person in every image: age, build, hair (colour and cut), beard or not, skin, and the exact clothes with their colour" }]`;
 
+const PLACES_SHAPE = `"places": [{ "name": "one Latin word used to point a scene at the place, e.g. Corridor", "look": "ENGLISH, three or four precise sentences fixing what never changes about the place, so it is the same in every image: its size and shape, the walls (colour, condition), the floor, every door (material, colour, where it is, its lock, peephole and handle), the furniture, and the light (source and colour). Nothing that changes during the story: whether a door is open or shut, who is there and what lies on the floor are left to each scene" }]`;
+
+// Fixes the look of the places of a series that was planned without any, in step with what was already published.
+export async function writePlaces(bible: SeriesBible, published: PreviousPart[], stills: Buffer[] = []): Promise<Place[]> {
+  const prompt = `This is the plan of a serialized Egyptian horror story told as short videos. Its images are made one by one from text, so every place needs ONE fixed description or it looks different in every image.
+
+Title: ${bible.title}
+Story: ${bible.premise}
+Parts: ${bible.parts.map((part) => `${part.number}. ${part.summary}`).join(" ")}
+${published.length ? `Already published narration (the places must fit it):\n${published.map((part) => `Part ${part.number}: ${part.narration}`).join("\n")}` : ""}
+
+${stills.length ? "The pictures above are stills from the published parts. Viewers have already seen these places: describe them as they look in the pictures (wall colour, floor, doors, light), choosing the most common look where the pictures differ.\n" : ""}
+List the two to five places this story happens in. A door that matters to the story (one that is locked, one something stands behind) is described inside the place it is seen from, in full: its material, colour, lock, peephole and handle.
+
+Return ONLY JSON: { ${PLACES_SHAPE} }`;
+  return writeValidated(prompt, (data) => {
+    const parsed = z.object({ places: z.array(placeSchema).min(1).max(5) }).safeParse(data);
+    return parsed.success ? parsed.data.places : parsed.error.message;
+  }, stills.length ? stills : undefined);
+}
+
 // Proposes speaking characters for a series that was planned without any.
 export async function writeCast(bible: SeriesBible): Promise<CastMember[]> {
   const prompt = `This is the plan of a serialized Egyptian horror story told as short videos. The main character narrates it.
@@ -73,11 +96,11 @@ export type PreviousPart = {
   narration: string;
 };
 
-async function writeValidated<T>(prompt: string, validate: (data: unknown) => T | string): Promise<T> {
+async function writeValidated<T>(prompt: string, validate: (data: unknown) => T | string, images?: Buffer[]): Promise<T> {
   let problem = "";
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     // A failed attempt's problem is told to the writer, so the next try fixes it.
-    const { data } = await writeJson(problem ? `${prompt}\n\nYour previous answer was rejected: ${problem}. Fix that.` : prompt);
+    const { data } = await writeJson(problem ? `${prompt}\n\nYour previous answer was rejected: ${problem}. Fix that.` : prompt, undefined, images);
     const result = validate(data);
     if (typeof result !== "string") return result;
     problem = result;
@@ -104,9 +127,10 @@ Return ONLY JSON:
   "styleSheet": "ENGLISH, one sentence fixing the look of every image: cinematic horror film still, photorealistic, lens, colour palette, lighting, film grain, vertical composition",
   "hashtags": ["#رعب", "..."],
   ${CAST_SHAPE},
+  ${PLACES_SHAPE},
   "parts": [{ "number": 1, "summary": "English, what happens in this part", "cliffhanger": "English, the question it ends on" }]
 }
-with exactly ${options.parts} parts and one or two cast members.`;
+with exactly ${options.parts} parts, one or two cast members and two to five places.`;
 
   return writeValidated(prompt, (data) => {
     const parsed = seriesBibleSchema.safeParse(data);
@@ -164,12 +188,13 @@ ${OPENING_RULES}
 
 ${SCENE_RULES}
 ${dialogueRules(bible.cast)}
+${placeRules(bible.places)}
 ${options.current && options.note ? `\nThe producer rejected the previous version with this note. Follow it fully, even where that means writing every scene anew: ${options.note}\nThe rejected version, for reference only (do not copy its lines unless they already fit the note and the rules above):\n${JSON.stringify(options.current.scenes.map((scene) => scene.lines))}\n` : ""}
 Return ONLY JSON:
 {
   "description": "one or two Arabic sentences (Egyptian colloquial) for this part's video description, no spoilers",
   "hook": "the on-screen headline for scene 1",
-  "scenes": [{ "lines": [{ "speaker": "Narrator", "text": "..." }], "imagePrompt": "...", "shows": ["Hero"], "motionPrompt": "..." }]
+  "scenes": [{ "lines": [{ "speaker": "Narrator", "text": "..." }], "place": "...", "imagePrompt": "...", "shows": ["Hero"], "motionPrompt": "..." }]
 }
 with exactly ${options.scenes} scenes.`;
 
@@ -186,6 +211,7 @@ with exactly ${options.scenes} scenes.`;
       // The same seed in every part keeps the look of the series consistent.
       seed: options.seed,
       cast: bible.cast,
+      places: bible.places,
       scenes: parsed.data.scenes,
     });
     return storyProblem(story, options.scenes) ?? story;

@@ -90,6 +90,7 @@ function summarize(episode: Episode) {
 
 async function detail(episode: Episode) {
   const scenes = [];
+  const flagged = (step: "images" | "clips", number: number) => getStep(episode.id, step).meta.flags?.find((flag) => flag.scene === number)?.problem ?? null;
   for (const [index, scene] of (episode.story?.scenes ?? []).entries()) {
     const number = index + 1;
     const voiceFile = Bun.file(paths.voiceTimings(episode.dir, number));
@@ -101,6 +102,9 @@ async function detail(episode: Episode) {
       audioSeconds: voice?.duration ?? null,
       imageUrl: await versioned(`${paths.renderDir(episode.dir, MODEL)}/images/${sceneName(number)}.png`),
       clipUrl: await versioned(paths.clip(episode.dir, MODEL, number)),
+      // What the automatic check found wrong with the scene's image or clip, if anything.
+      imageProblem: flagged("images", number),
+      clipProblem: flagged("clips", number),
     });
   }
   const series = getSeries(episode.seriesId);
@@ -286,7 +290,9 @@ app.put("/api/series/:id", async (context) => {
     throw new HttpError(409, `Part ${lastStarted} already exists, so the series cannot be shorter than ${lastStarted} parts`);
   }
   // Parts are always numbered 1..n in order, whatever the client sent.
-  saveSeriesBible(series.id, { ...bible, parts: bible.parts.map((part, index) => ({ ...part, number: index + 1 })) });
+  // An app that does not know about places sends none: the ones the series has are kept.
+  const places = bible.places.length ? bible.places : series.bible.places;
+  saveSeriesBible(series.id, { ...bible, places, parts: bible.parts.map((part, index) => ({ ...part, number: index + 1 })) });
   if (series.status === "finished" && bible.parts.length > lastStarted) setSeriesStatus(series.id, "active");
   return context.json(await presentSeries(requireSeries(context.req.param("id"))));
 });
@@ -304,8 +310,16 @@ app.get("/api/episodes/:id", async (context) => context.json(await detail(requir
 app.put("/api/episodes/:id/story", async (context) => {
   const episode = requireEpisode(context.req.param("id"));
   if (getStep(episode.id, "story").status !== "review") throw new HttpError(409, "The story can only be edited while it is in review");
-  // The editors do not send the headline, so an edit keeps the one already written.
-  const story = storySchema.parse({ hook: episode.story?.hook, ...(await context.req.json()) });
+  // The editors do not send the headline or the places, so an edit keeps the ones already written.
+  const body = (await context.req.json()) as { scenes?: Record<string, unknown>[] };
+  const before = episode.story;
+  const sameScenes = Array.isArray(body.scenes) && body.scenes.length === before?.scenes.length;
+  const story = storySchema.parse({
+    hook: before?.hook,
+    places: before?.places,
+    ...body,
+    scenes: sameScenes ? body.scenes?.map((scene, index) => ({ place: before?.scenes[index]?.place, ...scene })) : body.scenes,
+  });
   saveEpisodeStory(episode.id, story);
   await saveStory(episode.dir, story);
   return context.json(await detail(requireEpisode(context.req.param("id"))));
