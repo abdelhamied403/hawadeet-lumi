@@ -1,6 +1,6 @@
 import { Feather } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
-import { formatDistanceToNow } from "date-fns";
+import { formatDistanceToNow, isPast } from "date-fns";
 import { router, useLocalSearchParams } from "expo-router";
 import { useState } from "react";
 import { Alert, KeyboardAvoidingView, Linking, Pressable, ScrollView, Text, View } from "react-native";
@@ -17,7 +17,7 @@ import { VideoBench, type MixChoice } from "@/components/video-bench";
 import { VoiceBench } from "@/components/voice-bench";
 import { useEpisodeActions } from "@/hooks/use-episode-actions";
 import { errorMessage } from "@/lib/http";
-import { STEP_COPY } from "@/lib/steps";
+import { slotLabel, STEP_COPY } from "@/lib/steps";
 import { getEpisode, type EpisodeDetail, type Step, type StepName } from "@/services/veogen";
 
 const NOTE_HINTS: Record<Exclude<StepName, "publish">, string> = {
@@ -68,7 +68,7 @@ export default function EpisodeScreen() {
 }
 
 function StepBench({ episode, step }: { episode: EpisodeDetail; step: Step }) {
-  const { sendBack, publish } = useEpisodeActions(episode.id);
+  const { sendBack, publish, schedule, unschedule } = useEpisodeActions(episode.id);
   const [marked, setMarked] = useState<number[]>([]);
   const [mix, setMix] = useState<MixChoice>({});
   const name = step.name;
@@ -83,10 +83,12 @@ function StepBench({ episode, step }: { episode: EpisodeDetail; step: Step }) {
       { text: "Redo from here", style: "destructive", onPress: () => sendBack.mutate({ step: name, payload: {} }) },
     ]);
   const confirmPublish = () =>
-    Alert.alert("Publish this part?", "Publishing cannot be undone from here.", [
+    Alert.alert("Publish this part now?", "Publishing cannot be undone from here.", [
       { text: "Not yet", style: "cancel" },
-      { text: "Publish", onPress: () => publish.mutate() },
+      { text: "Publish now", onPress: () => publish.mutate() },
     ]);
+  const scheduledFor = name === "publish" && inReview ? step.meta.scheduledFor : undefined;
+  const publishBusy = publish.isPending || schedule.isPending || unschedule.isPending;
 
   let body: React.ReactNode;
   let bar: React.ReactNode = null;
@@ -129,6 +131,17 @@ function StepBench({ episode, step }: { episode: EpisodeDetail; step: Step }) {
         {name === "voice" && <VoiceBench episode={episode} />}
         {(name === "images" || name === "clips") && <SceneWall episode={episode} kind={name} marked={marked} onToggle={toggle} selectable={inReview} />}
         {name === "video" && <VideoBench episode={episode} mix={mix} onMixChange={setMix} adjustable={inReview} />}
+        {scheduledFor && (
+          <View className="gap-1 rounded-lg border border-border bg-card p-5">
+            <Meta className="uppercase tracking-widest">Scheduled</Meta>
+            <Text className="font-display text-3xl uppercase leading-9 tracking-wide text-foreground">{slotLabel(scheduledFor)}</Text>
+            <Body>
+              {isPast(scheduledFor)
+                ? "Posting now. This screen updates by itself."
+                : `Posts by itself ${formatDistanceToNow(new Date(scheduledFor), { addSuffix: true })}. You get an alert when it is out.`}
+            </Body>
+          </View>
+        )}
         {name === "publish" && <PublishBench episode={episode} />}
         {step.status === "approved" && name !== "publish" && episode.status === "in_progress" && (
           <View className="flex-row flex-wrap items-center justify-end gap-3">
@@ -150,7 +163,17 @@ function StepBench({ episode, step }: { episode: EpisodeDetail; step: Step }) {
         />
       );
     } else if (inReview) {
-      bar = <Button label={publish.isPending ? "Publishing" : "Publish"} size="lg" busy={publish.isPending} onPress={confirmPublish} />;
+      bar = scheduledFor ? (
+        <View className="flex-row flex-wrap items-center justify-end gap-2">
+          <Button label="Cancel schedule" variant="outline" busy={unschedule.isPending} disabled={publishBusy} onPress={() => unschedule.mutate()} />
+          <Button label={publish.isPending ? "Publishing" : "Publish now"} variant="outline" busy={publish.isPending} disabled={publishBusy} onPress={confirmPublish} />
+        </View>
+      ) : (
+        <View className="gap-2">
+          <Button label={`Schedule for ${slotLabel(episode.publishSlot)}`} size="lg" busy={schedule.isPending} disabled={publishBusy} onPress={() => schedule.mutate()} />
+          <Button label={publish.isPending ? "Publishing" : "Publish now"} variant="ghost" busy={publish.isPending} disabled={publishBusy} onPress={confirmPublish} />
+        </View>
+      );
     }
   }
 

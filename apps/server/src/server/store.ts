@@ -78,6 +78,8 @@ export const stepMetaSchema = z.object({
   jobUrl: z.string().optional(),
   // Scenes the automatic check found not to match what they should show; shown to the owner at review.
   flags: z.array(z.object({ scene: z.number().int(), problem: z.string() })).optional(),
+  // When the publish step posts by itself (ISO time); absent while it waits for the owner.
+  scheduledFor: z.string().optional(),
   startedAt: z.string().optional(),
   musicTrack: z.string().optional(),
   musicVolume: z.number().optional(),
@@ -132,6 +134,8 @@ export const settingsSchema = z.object({
   autoCreate: z.boolean().default(true),
   // Local time (HH:mm) after which the day's part is created.
   dailyTime: z.string().regex(/^\d{2}:\d{2}$/).default("09:00"),
+  // Local time (HH:mm) at which a scheduled part is posted.
+  publishTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default("22:00"),
   scenesPerPart: z.number().int().min(4).max(24).default(16),
   partsPerSeries: z.number().int().min(2).max(12).default(6),
   // Page posts drafted each day between videos; 0 turns them off.

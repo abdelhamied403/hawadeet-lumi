@@ -13,7 +13,7 @@ import { authEnabled, login, loginSchema, logout, mediaToken, requireMediaAccess
 import { estimateStep } from "./estimates";
 import { totalPlays, youtubeViews } from "../stages/analytics";
 import { AI_NOTE, POST_TEXT_MAX } from "../stages/posts";
-import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, uploadFullStory, youtubeConnected, createNextEpisode, draftPost, MODEL, publishEpisode, publishPost, rejectStep, rewritePost, takeReport, tick, uploadEpisodeToYoutube } from "./engine";
+import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, uploadFullStory, youtubeConnected, createNextEpisode, draftPost, MODEL, nextPublishSlot, publishEpisode, publishPost, rejectStep, rewritePost, scheduleEpisode, takeReport, tick, unscheduleEpisode, uploadEpisodeToYoutube } from "./engine";
 import {
   getEpisode,
   getPost,
@@ -66,7 +66,7 @@ async function versioned(path: string): Promise<string | null> {
 // Each step with how long its work takes and, while it is working, when it should finish.
 function timedSteps(episode: Episode) {
   const sceneCount = episode.story?.scenes.length ?? getSettings().scenesPerPart;
-  return getSteps(episode.id).map((step) => ({ ...step, ...estimateStep(step, sceneCount) }));
+  return getSteps(episode.id).map((step) => ({ ...step, ...estimateStep(step, sceneCount), scheduledFor: step.meta.scheduledFor ?? null }));
 }
 
 function summarize(episode: Episode) {
@@ -84,7 +84,7 @@ function summarize(episode: Episode) {
     createdAt: episode.createdAt,
     publishedAt: episode.publishedAt,
     currentStep: current?.name ?? null,
-    steps: steps.map(({ name, status, estimateSeconds, endsAt }) => ({ name, status, estimateSeconds, endsAt })),
+    steps: steps.map(({ name, status, estimateSeconds, endsAt, scheduledFor }) => ({ name, status, estimateSeconds, endsAt, scheduledFor })),
   };
 }
 
@@ -117,6 +117,8 @@ async function detail(episode: Episode) {
     narrationUrl: await versioned(paths.narration(episode.dir)),
     videoUrl: await versioned(paths.final(episode.dir, MODEL)),
     description: await buildDescription(episode),
+    // When the part would go out if it were scheduled now.
+    publishSlot: nextPublishSlot(episode.id).toISOString(),
     // Whether the server can upload this part to YouTube itself.
     youtubeConnected,
     musicTracks: await listMusic(),
@@ -366,6 +368,19 @@ app.post("/api/episodes/:id/steps/:step/reject", async (context) => {
 app.post("/api/episodes/:id/publish", async (context) => {
   const episode = requireEpisode(context.req.param("id"));
   await publishEpisode(episode.id);
+  return context.json(await detail(requireEpisode(context.req.param("id"))));
+});
+
+// Books the part for the next free posting time (the time of day is in Settings).
+app.post("/api/episodes/:id/schedule", async (context) => {
+  const episode = requireEpisode(context.req.param("id"));
+  scheduleEpisode(episode.id);
+  return context.json(await detail(requireEpisode(context.req.param("id"))));
+});
+
+app.delete("/api/episodes/:id/schedule", async (context) => {
+  const episode = requireEpisode(context.req.param("id"));
+  unscheduleEpisode(episode.id);
   return context.json(await detail(requireEpisode(context.req.param("id"))));
 });
 

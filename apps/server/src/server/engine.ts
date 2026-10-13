@@ -1,5 +1,5 @@
 import { mkdir, rm } from "node:fs/promises";
-import { format } from "date-fns";
+import { addDays, format, set } from "date-fns";
 import { config } from "../config";
 import { ffmpeg } from "../lib/ffmpeg";
 import { paths, saveStory } from "../lib/project";
@@ -495,6 +495,7 @@ export async function tick(): Promise<void> {
     await ensureDailyEpisode();
     // Not awaited: writing a post must not hold up the parts in production.
     void ensurePagePosts();
+    publishScheduled();
     for (const episode of listEpisodes({ status: "in_progress" }).reverse()) {
       await advance(episode).catch((error) => console.error(`episode ${episode.id}: ${error}`));
     }
@@ -532,7 +533,7 @@ export function rejectStep(episodeId: number, name: StepName, options: RejectOpt
   // A Kaggle job already running for a later step is NOT stopped by this: Kaggle's API gives no way to
   // find the running session, so the owner has to stop it on Kaggle.
   for (const later of STEP_NAMES.slice(STEP_NAMES.indexOf(name) + 1)) {
-    updateStep(episodeId, later, { status: "waiting", error: null, meta: { scenes: undefined, note: undefined } });
+    updateStep(episodeId, later, { status: "waiting", error: null, meta: { scenes: undefined, note: undefined, scheduledFor: undefined } });
   }
 }
 
@@ -688,6 +689,54 @@ export async function fullStoryText(series: Series): Promise<{ title: string; de
   };
 }
 
+// The next posting time that no other part is booked for.
+export function nextPublishSlot(exceptEpisodeId?: number): Date {
+  const [hours, minutes] = getSettings().publishTime.split(":").map(Number) as [number, number];
+  const day = (date: Date) => format(date, "yyyy-MM-dd");
+  const taken = new Set<string>();
+  for (const episode of listEpisodes({ status: "in_progress" })) {
+    const booked = getStep(episode.id, "publish").meta.scheduledFor;
+    if (booked && episode.id !== exceptEpisodeId) taken.add(day(new Date(booked)));
+  }
+  let slot = set(new Date(), { hours, minutes, seconds: 0, milliseconds: 0 });
+  while (slot <= new Date() || taken.has(day(slot))) slot = addDays(slot, 1);
+  return slot;
+}
+
+// Books the part for the next free posting time; until then the owner can still cancel or post it at once.
+export function scheduleEpisode(episodeId: number): void {
+  if (getStep(episodeId, "publish").status !== "review") throw new Error("The video has not been approved yet");
+  updateStep(episodeId, "publish", { error: null, meta: { scheduledFor: nextPublishSlot(episodeId).toISOString() } });
+}
+
+export function unscheduleEpisode(episodeId: number): void {
+  if (getStep(episodeId, "publish").status !== "review") throw new Error("This part is not waiting to be posted");
+  updateStep(episodeId, "publish", { meta: { scheduledFor: undefined } });
+}
+
+// Posts the parts whose booked time has come, and tells the owner how it went.
+function publishScheduled(): void {
+  for (const episode of listEpisodes({ status: "in_progress" })) {
+    const step = getStep(episode.id, "publish");
+    if (step.status !== "review" || !step.meta.scheduledFor || new Date(step.meta.scheduledFor) > new Date()) continue;
+    // Cleared first: a post that fails waits for the owner instead of being tried again on every tick.
+    updateStep(episode.id, "publish", { meta: { scheduledFor: undefined } });
+    void publishEpisode(episode.id)
+      .then(() => getStep(episode.id, "publish").error)
+      .catch((error) => (error instanceof Error ? error.message : String(error)))
+      .then((problem) => {
+        if (problem) console.error(`episode ${episode.id} scheduled post failed: ${problem}`);
+        void alert({
+          title: problem ? `Part ${episode.partNumber} was not posted` : `Part ${episode.partNumber} is out`,
+          message: problem ? problem.slice(0, 300) : "Posted at its scheduled time. Open Veogen to see where it went.",
+          click: `veogen://episodes/${episode.id}`,
+          tags: [problem ? "warning" : "tada"],
+          priority: problem ? 4 : 3,
+        });
+      });
+  }
+}
+
 export async function publishEpisode(episodeId: number): Promise<void> {
   const episode = getEpisode(episodeId);
   if (!episode) throw new Error("No such episode");
@@ -696,7 +745,19 @@ export async function publishEpisode(episodeId: number): Promise<void> {
   const videoPath = paths.final(episode.dir, MODEL);
   const published: NonNullable<StepMeta["published"]> = {};
 
-  updateStep(episodeId, "publish", { status: "running", error: null });
+  // Listed as a task of this process, so a tick during the uploads does not take the step for one cut off by a restart.
+  const key = taskKey(episodeId, "publish");
+  localTasks.add(key);
+  try {
+    await sendOut(episode, description, videoPath, published);
+  } finally {
+    localTasks.delete(key);
+  }
+}
+
+async function sendOut(episode: Episode, description: string, videoPath: string, published: NonNullable<StepMeta["published"]>): Promise<void> {
+  const episodeId = episode.id;
+  updateStep(episodeId, "publish", { status: "running", error: null, meta: { scheduledFor: undefined } });
   if (config.FACEBOOK_PAGE_ID && config.FACEBOOK_PAGE_TOKEN) {
     try {
       const reel = await publishReel({

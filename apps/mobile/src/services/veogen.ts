@@ -11,6 +11,8 @@ export type StepSummary = {
   estimateSeconds: number | null;
   // When a step that is working now should finish.
   endsAt: string | null;
+  // When the publish step posts by itself; null while it waits for the owner.
+  scheduledFor: string | null;
 };
 
 export type PublishResult = { status: "posted" | "manual" | "failed"; url?: string; detail?: string };
@@ -28,6 +30,7 @@ export type Step = StepSummary & {
     musicVolume?: number;
     sfxVolume?: number;
     published?: Record<string, PublishResult>;
+    scheduledFor?: string;
   };
 };
 
@@ -103,6 +106,8 @@ export type EpisodeDetail = Omit<EpisodeSummary, "steps"> & {
   narrationUrl: string | null;
   videoUrl: string | null;
   description: string;
+  // When the part would go out if it were scheduled now.
+  publishSlot: string;
   // True when the server is connected to YouTube and can upload the part itself.
   youtubeConnected: boolean;
   musicTracks: string[];
@@ -186,6 +191,8 @@ export type UpdateScenePayload = { imagePrompt?: string; motionPrompt?: string }
 export type Settings = {
   autoCreate: boolean;
   dailyTime: string;
+  // Time of day (HH:mm, Cairo) at which a scheduled part is posted.
+  publishTime: string;
   scenesPerPart: number;
   partsPerSeries: number;
   // Page posts drafted each day; 0 turns them off.
@@ -283,6 +290,15 @@ export async function rejectStep(id: number, step: StepName, payload: RejectStep
 
 export async function publishEpisode(id: number): Promise<EpisodeDetail> {
   return (await veogenHttp.post<EpisodeDetail>(`/api/episodes/${id}/publish`)).data;
+}
+
+// Books the part for the next free posting time.
+export async function scheduleEpisode(id: number): Promise<EpisodeDetail> {
+  return (await veogenHttp.post<EpisodeDetail>(`/api/episodes/${id}/schedule`)).data;
+}
+
+export async function unscheduleEpisode(id: number): Promise<EpisodeDetail> {
+  return (await veogenHttp.delete<EpisodeDetail>(`/api/episodes/${id}/schedule`)).data;
 }
 
 // Sends an already published part to the connected YouTube channel.

@@ -19,6 +19,7 @@ import { getSettings, sendTestAlert, updateSettings, type SettingsResponse } fro
 const settingsFormSchema = z.object({
   autoCreate: z.boolean(),
   dailyTime: z.string().regex(/^\d{2}:\d{2}$/, "Use a time like 09:00"),
+  publishTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a time like 22:00"),
   scenesPerPart: z.number({ error: "Enter a number" }).int("Enter a whole number").min(4, "At least 4 scenes").max(24, "At most 24 scenes"),
   partsPerSeries: z.number({ error: "Enter a number" }).int("Enter a whole number").min(2, "At least 2 parts").max(12, "At most 12 parts"),
   postsPerDay: z.number({ error: "Enter a number" }).int("Enter a whole number").min(0, "0 turns Page posts off").max(3, "At most 3 a day"),
@@ -40,13 +41,14 @@ export default function SettingsScreen() {
   const { data, error, refetch, isRefetching } = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const form = useForm<SettingsForm>({
     resolver: zodResolver(settingsFormSchema),
-    defaultValues: { autoCreate: true, dailyTime: "09:00", scenesPerPart: 16, partsPerSeries: 6, postsPerDay: 1, youtubeUrl: "", notifications: true },
+    defaultValues: { autoCreate: true, dailyTime: "09:00", publishTime: "22:00", scenesPerPart: 16, partsPerSeries: 6, postsPerDay: 1, youtubeUrl: "", notifications: true },
   });
   useEffect(() => {
     if (data) {
       form.reset({
         autoCreate: data.autoCreate,
         dailyTime: data.dailyTime,
+        publishTime: data.publishTime,
         scenesPerPart: data.scenesPerPart,
         partsPerSeries: data.partsPerSeries,
         postsPerDay: data.postsPerDay,
@@ -98,6 +100,20 @@ export default function SettingsScreen() {
             </View>
           )}
         />
+        <Controller
+          control={form.control}
+          name="publishTime"
+          render={({ field }) => (
+            <View className="gap-1.5">
+              <Field label="Post scheduled parts at (24-hour time, Cairo)" value={field.value} onChangeText={field.onChange} onBlur={field.onBlur} placeholder="22:00" keyboardType="numbers-and-punctuation" maxLength={5} />
+              <FieldError message={errors.publishTime?.message} />
+            </View>
+          )}
+        />
+        <Meta className="leading-5">
+          When you schedule a finished part, it goes out at this time on the next free day, one part a day. Parts already scheduled keep the time
+          they were given.
+        </Meta>
         <NumberField control={form.control} name="scenesPerPart" label="Scenes per part" message={errors.scenesPerPart?.message} />
         <NumberField control={form.control} name="partsPerSeries" label="Parts per series" message={errors.partsPerSeries?.message} />
         <Meta className="leading-5">

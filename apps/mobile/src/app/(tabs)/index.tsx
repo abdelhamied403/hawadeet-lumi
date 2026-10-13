@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Arabic, Body, FieldError, Meta, Title } from "@/components/ui/text";
 import { errorMessage } from "@/lib/http";
-import { STATUS_COPY, STEP_COPY } from "@/lib/steps";
+import { isScheduled, slotLabel, STATUS_COPY, STEP_COPY } from "@/lib/steps";
 import { toast } from "@/lib/toast";
 import { createEpisode, getOverview, type EpisodeSummary, type OverviewResponse } from "@/services/veogen";
 
@@ -82,8 +82,16 @@ function EpisodeList({ episodes }: { episodes: EpisodeSummary[] }) {
     <View className="gap-2">
       {episodes.map((episode) => {
         const current = episode.steps.find((step) => step.name === episode.currentStep);
-        const needsYou = current?.status === "review" || current?.status === "failed";
-        const state = episode.status === "published" ? "Published" : current ? `${STEP_COPY[current.name].label}: ${STATUS_COPY[current.status].toLowerCase()}` : "";
+        const scheduled = current && isScheduled(current) ? current.scheduledFor : null;
+        const needsYou = (current?.status === "review" && !scheduled) || current?.status === "failed";
+        const state =
+          episode.status === "published"
+            ? "Published"
+            : scheduled
+              ? `Posts ${slotLabel(scheduled)}`
+              : current
+                ? `${STEP_COPY[current.name].label}: ${STATUS_COPY[current.status].toLowerCase()}`
+                : "";
         return (
           <Pressable
             key={episode.id}

@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useEffect, useRef, useState } from "react";
 import { AccessibilityInfo, ActivityIndicator, Animated, Pressable, ScrollView, Text, View } from "react-native";
-import { STATUS_COPY, STEP_COPY, stepTiming } from "@/lib/steps";
+import { isScheduled, statusLabel, STEP_COPY, stepTiming } from "@/lib/steps";
 import type { StepName, StepSummary } from "@/services/veogen";
 
 const FRAME_WIDTH = 116;
@@ -54,7 +54,7 @@ export function Filmstrip({ steps, selected, onSelect }: { steps: StepSummary[];
         <Sprockets count={steps.length * 6} />
         <View className="flex-row gap-1.5 px-1.5">
           {steps.map((step, index) => {
-            const needsYou = step.status === "review" || step.status === "failed";
+            const needsYou = (step.status === "review" && !isScheduled(step)) || step.status === "failed";
             const busy = step.status === "running" || step.status === "queued";
             const timing = stepTiming(step);
             const current = selected === step.name;
@@ -63,7 +63,7 @@ export function Filmstrip({ steps, selected, onSelect }: { steps: StepSummary[];
                 key={step.name}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: current }}
-                accessibilityLabel={`Step ${index + 1}, ${STEP_COPY[step.name].label}: ${STATUS_COPY[step.status]}${timing ? `, ${timing}` : ""}`}
+                accessibilityLabel={`Step ${index + 1}, ${STEP_COPY[step.name].label}: ${statusLabel(step)}${timing ? `, ${timing}` : ""}`}
                 onPress={() => onSelect(step.name)}
                 style={{ width: FRAME_WIDTH }}
                 className={`h-28 justify-between rounded-sm border bg-card p-2.5 active:bg-secondary ${current ? "border-foreground/50" : "border-transparent"} ${step.status === "waiting" ? "opacity-55" : ""}`}
@@ -78,7 +78,7 @@ export function Filmstrip({ steps, selected, onSelect }: { steps: StepSummary[];
                 <View>
                   <Text className="font-display text-xl uppercase leading-6 tracking-wide text-foreground">{STEP_COPY[step.name].label}</Text>
                   <Text className={`font-sans text-xs ${step.status === "failed" ? "text-destructive" : needsYou ? "text-primary" : "text-muted-foreground"}`}>
-                    {STATUS_COPY[step.status]}
+                    {statusLabel(step)}
                   </Text>
                   {timing && (
                     <Text numberOfLines={1} className="font-sans text-xs text-muted-foreground">
@@ -106,11 +106,11 @@ export function FilmstripMini({ steps }: { steps: StepSummary[] }) {
           className={`h-3 w-5 rounded-[2px] ${
             step.status === "approved"
               ? "bg-ok"
-              : step.status === "review"
+              : step.status === "review" && !isScheduled(step)
                 ? "bg-primary"
                 : step.status === "failed"
                   ? "bg-destructive"
-                  : step.status === "running" || step.status === "queued"
+                  : step.status === "running" || step.status === "queued" || isScheduled(step)
                     ? "bg-muted-foreground"
                     : "bg-secondary"
           }`}

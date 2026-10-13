@@ -5,12 +5,14 @@ import {
   approveStep,
   publishEpisode,
   rejectStep,
+  scheduleEpisode,
+  unscheduleEpisode,
   type EpisodeDetail,
   type RejectStepPayload,
   type StepName,
 } from "@/services/veogen";
 
-// The three decisions the owner can make on a part, each refreshing the open episode afterwards.
+// The decisions the owner can make on a part, each refreshing the open episode afterwards.
 export function useEpisodeActions(episodeId: number) {
   const queryClient = useQueryClient();
   const onSuccess = (episode: EpisodeDetail) => {
@@ -43,5 +45,21 @@ export function useEpisodeActions(episodeId: number) {
     },
     onError,
   });
-  return { approve, sendBack, publish };
+  const schedule = useMutation({
+    mutationFn: () => scheduleEpisode(episodeId),
+    onSuccess: (episode) => {
+      onSuccess(episode);
+      toast("Scheduled");
+    },
+    onError,
+  });
+  const unschedule = useMutation({
+    mutationFn: () => unscheduleEpisode(episodeId),
+    onSuccess: (episode) => {
+      onSuccess(episode);
+      toast("Schedule cancelled");
+    },
+    onError,
+  });
+  return { approve, sendBack, publish, schedule, unschedule };
 }

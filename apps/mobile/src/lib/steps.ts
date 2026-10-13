@@ -1,4 +1,4 @@
-import { format, intervalToDuration, isPast } from "date-fns";
+import { format, intervalToDuration, isPast, isToday, isTomorrow } from "date-fns";
 import type { StepName, StepStatus, StepSummary } from "@/services/veogen";
 
 export const STEP_COPY: Record<StepName, { label: string; working: string; approve: string; waitsOn: string }> = {
@@ -17,8 +17,24 @@ export function aboutDuration(seconds: number): string {
   return `about ${[hours ? `${hours} h` : "", rest ? `${rest} min` : ""].filter(Boolean).join(" ")}`;
 }
 
+// "today at 10:00 PM", "tomorrow at 10:00 PM", "Friday at 10:00 PM"
+export function slotLabel(slot: string): string {
+  const day = isToday(slot) ? "today" : isTomorrow(slot) ? "tomorrow" : format(slot, "EEEE");
+  return `${day} at ${format(slot, "h:mm a")}`;
+}
+
+// A publish step that is booked to post by itself, so it is not waiting for the owner.
+export function isScheduled(step: StepSummary): boolean {
+  return step.status === "review" && Boolean(step.scheduledFor);
+}
+
+export function statusLabel(step: StepSummary): string {
+  return isScheduled(step) ? "Scheduled" : STATUS_COPY[step.status];
+}
+
 // What a step's frame says about time: how long it will take, or when it should be done.
 export function stepTiming(step: StepSummary): string | null {
+  if (isScheduled(step) && step.scheduledFor) return slotLabel(step.scheduledFor);
   if (step.endsAt) return isPast(step.endsAt) ? "should finish any minute" : `done about ${format(step.endsAt, "h:mm a")}`;
   return step.estimateSeconds ? aboutDuration(step.estimateSeconds) : null;
 }
