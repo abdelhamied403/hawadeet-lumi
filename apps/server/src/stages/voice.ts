@@ -29,7 +29,7 @@ type Interval = { start: number; end: number };
 // One spoken line and where it sits in the story (scene and line numbers start at 1).
 type ScriptLine = { scene: number; line: number; speaker: string; text: string };
 // One recording: every line it contains is spoken by one of its (one or two) voices.
-type Take = { name: string; lines: ScriptLine[] };
+export type Take = { name: string; lines: ScriptLine[] };
 
 const DIACRITICS = /[ً-ْٰ]/g;
 const SILENCE_FILTER = "silencedetect=noise=-38dB:d=0.22";
@@ -241,7 +241,7 @@ async function recordTake(story: Story, take: Take, audioPath: string, styleNote
 type LinePiece = { duration: number; words: WordTiming[] };
 
 // Cuts a recording into its lines and returns each line's length and word timings.
-async function cutTake(dir: string, take: Take, audioPath: string): Promise<Map<string, LinePiece>> {
+export async function cutTake(dir: string, take: Take, audioPath: string): Promise<Map<string, LinePiece>> {
   const duration = await mediaDuration(audioPath);
   const silences = await detectSilences(audioPath, duration);
   const texts = take.lines.map((line) => line.text);
