@@ -50,8 +50,10 @@ MODELS = {
 STAGE = sys.argv[1] if len(sys.argv) > 1 else "main"
 TIMINGS_PATH = os.path.join(OUT, "timings.json")
 RESTART_CODE = 75
-# The clips process is restarted before the 31 GB machine runs out; it creeps up by a few GB per clip.
-RAM_RESTART_GB = 27
+# The clips process is restarted before the 31 GB machine runs out. Memory creeps up by a few GB per clip and
+# decoding a clip needs about 8 GB more on top, so a clip may only start below this: one started at 22.6 GB
+# took the whole machine down while decoding, and every clip finished in that job was lost with it.
+RAM_RESTART_GB = 21.5
 
 timings = {"model": MODEL, "setup_seconds": 0, "images": [], "clips": [], "notes": []}
 if STAGE != "main" and os.path.exists(TIMINGS_PATH):
@@ -74,10 +76,17 @@ def save_timings():
 
 
 def free():
+    import ctypes
+
     import torch
 
     gc.collect()
     torch.cuda.empty_cache()
+    # Hands freed memory back to the system, which Python otherwise keeps; it is what creeps up between clips.
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:
+        pass
 
 
 def drop_cache(repo_id):
@@ -375,6 +384,8 @@ def generate_clips():
                     }
                 )
                 log(f"clip {scene['index']} done in {seconds}s ({frames} frames)")
+                video = None
+                free()
                 break
             except Exception:  # noqa: BLE001
                 error = traceback.format_exc()
