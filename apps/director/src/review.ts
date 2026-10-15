@@ -37,7 +37,7 @@ Send back only for clear faults; the whole chapter is recorded again, which cost
 - Each character looks the same as in the other scenes and as described (clothes, hair, colours, the life jacket on the child near water; an animal does not wear a person's clothes).
 - The place and objects are as described; the moment matches the spoken lines.
 - Bright, friendly 3D cartoon style, nothing frightening, no text or logos, no malformed faces, hands, paws or beaks.
-For each scene you send back, give a promptFix: the scene's imagePrompt rewritten so the image model cannot get it wrong again (say exactly who is in the picture and that nobody else is, what each wears, who is out of frame). Keep the rest of the description.`,
+For each scene you send back, give a promptFix: the scene's imagePrompt rewritten so the image model cannot get it wrong again (say exactly who is in the picture and that nobody else is, what each wears, who is out of frame). Keep the rest of the description. Describe only what IS in the picture and NEVER name what must be left out: the image model does not understand "no" and draws every noun it reads, so "there is no fish in the basket" puts a fish in the basket. Write "the basket holds only one small silver disc" instead.`,
   clips: `You are reviewing the MOTION CLIPS of one chapter. For each scene you get one image with four frames of its 5-second clip side by side, left to right in time order. Open every one. Check:
 - Nothing appears that was not in the first frame (a new person or animal, a duplicated character), and nobody turns into someone else.
 - Faces, hands, paws and beaks stay well formed through the clip, and whoever speaks moves their mouth (there is no lip sync).
