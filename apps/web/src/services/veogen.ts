@@ -160,6 +160,7 @@ export type Settings = {
   dailyTime: string;
   scenesPerPart: number;
   partsPerSeries: number;
+  brandName: string;
 };
 
 export type SettingsResponse = Settings & {

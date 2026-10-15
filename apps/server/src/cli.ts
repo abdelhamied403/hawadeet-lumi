@@ -71,7 +71,7 @@ async function main(): Promise<void> {
       return;
     case "script":
       await runScript(requireDir(dir), {
-        topic: typeof flags.get("topic") === "string" ? (flags.get("topic") as string) : "horror story",
+        topic: typeof flags.get("topic") === "string" ? (flags.get("topic") as string) : "a kids story",
         scenes: Number(flags.get("scenes") ?? 10),
       });
       return;

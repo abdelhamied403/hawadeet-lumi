@@ -96,10 +96,14 @@ export type EpisodeScene = StoryScene & {
   // What the automatic check found wrong with the scene's image or clip; null when it found nothing.
   imageProblem: string | null;
   clipProblem: string | null;
+  // What the proofreader thinks needs a look in the scene's lines; null when it found nothing.
+  lineProblem: string | null;
 };
 
 export type EpisodeDetail = Omit<EpisodeSummary, "steps"> & {
   story: Story | null;
+  // The proofreader's remarks about the whole script, such as it not having run.
+  scriptWarnings: string[];
   plan: { number: number; summary: string; cliffhanger: string } | null;
   steps: Step[];
   scenes: EpisodeScene[];
@@ -201,6 +205,8 @@ export type Settings = {
   youtubeUrl: string;
   // Send alerts to the owner's phone.
   notifications: boolean;
+  // The Page and channel name used in descriptions and Page posts; empty until chosen.
+  brandName: string;
 };
 
 export type SettingsResponse = Settings & {
@@ -319,7 +325,7 @@ export async function updateSettings(payload: Settings): Promise<Settings> {
 }
 
 // What a Page post is trying to do.
-export type PostAngle = "question" | "teaser" | "moment" | "confession";
+export type PostAngle = "question" | "teaser" | "moment" | "parents";
 
 export type PagePost = {
   id: number;

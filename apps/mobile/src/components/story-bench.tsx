@@ -1,3 +1,4 @@
+import { Feather } from "@expo/vector-icons";
 import { useState } from "react";
 import { Text, View } from "react-native";
 import { StoryEditor } from "@/components/story-editor";
@@ -27,6 +28,11 @@ export function StoryBench({ episode, editable }: { episode: EpisodeDetail; edit
   const [editing, setEditing] = useState(false);
   const story = episode.story;
   if (!story) return null;
+  const flagged = episode.scenes.filter((scene) => scene.lineProblem).length;
+  const warnings = [
+    ...episode.scriptWarnings,
+    ...(flagged > 0 ? [`The proofreader flagged ${flagged} ${flagged === 1 ? "scene" : "scenes"} whose lines may not make sense. Nothing is changed until you edit or reject it.`] : []),
+  ];
 
   return (
     <View className="gap-4">
@@ -37,6 +43,12 @@ export function StoryBench({ episode, editable }: { episode: EpisodeDetail; edit
           {episode.plan.cliffhanger}
         </Body>
       )}
+      {warnings.map((warning) => (
+        <View key={warning} className="flex-row items-start gap-2 rounded-md border border-primary/40 bg-primary/10 p-3">
+          <Feather name="alert-triangle" size={16} color="#e9a23b" style={{ marginTop: 2 }} />
+          <Body className="flex-1">{warning}</Body>
+        </View>
+      ))}
       <View className="rounded-sm bg-paper px-4 py-6">
         {editing ? (
           <StoryEditor episode={episode} onDone={() => setEditing(false)} />
@@ -54,6 +66,7 @@ export function StoryBench({ episode, editable }: { episode: EpisodeDetail; edit
             </View>
             {story.scenes.map((scene, index) => {
               const words = countWords(scene.narration);
+              const problem = episode.scenes[index]?.lineProblem;
               return (
                 <View key={index} className={`gap-2 py-4 ${index < story.scenes.length - 1 ? "border-b border-paper-ink/10" : ""}`}>
                   <Text className="font-mono text-xs text-paper-ink/50">Scene {String(index + 1).padStart(2, "0")}</Text>
@@ -80,6 +93,7 @@ export function StoryBench({ episode, editable }: { episode: EpisodeDetail; edit
                     <Direction label="Motion" text={scene.motionPrompt} />
                     {scene.sfx && <Direction label="Sound" text={episode.soundEffects[scene.sfx] ?? scene.sfx} />}
                   </View>
+                  {problem && <Text className="font-sans-medium text-xs text-amber-800">Proofreader: {problem}</Text>}
                   {words > WORD_LIMIT && (
                     <Text className="font-sans-medium text-xs text-red-800">
                       {words} words: scenes over {WORD_LIMIT} run longer than the 5-second clip.

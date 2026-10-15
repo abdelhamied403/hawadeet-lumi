@@ -6,6 +6,10 @@ import { paths, sceneName } from "../lib/project";
 import { writeJson } from "../lib/story-model";
 import { NARRATOR, type Story } from "../schemas/story";
 
+// Whatever a small child should not see; flagged even where the picture matches its description.
+const KIDS_PICTURE_FAULTS = `- Kids safety: anything a small child could find frightening or upsetting (a menacing face, a dark threatening shadow, a monster, an injury, anger, someone crying in fear), a weapon or anything dangerous, or a child in an unsafe or improper situation.
+- It is not in the bright, friendly 3D cartoon style of the story (photorealistic people, dark or gloomy colours).`;
+
 const LOOK_WIDTH = 384;
 // Frames looked at per clip, spread over its length and laid side by side in time order.
 const CLIP_FRAMES = 4;
@@ -88,19 +92,21 @@ async function checkBatch(dir: string, story: Story, options: CheckOptions, numb
       : `Each picture above is one scene's 5-second clip, as ${CLIP_FRAMES} frames side by side in time order (left is the start, right is the end).`;
   const faults =
     options.kind === "images"
-      ? `- It shows a different thing or place from the one described (a window where the door should be, a courtyard where a dark room should be).
+      ? `- It shows a different thing or place from the one described (a kitchen where the garden should be, a dog where the cat should be).
 - A door, lock or object is in a different state from the description (open where it is shut).
 - The person the scene is about is missing, or there are people who should not be there.
 - The viewer could not tell from the picture what the spoken words are about.
 - It shows something the story has not revealed yet.
-- Written text, a logo, or a clearly malformed face, hand or object.`
+- Written text, a logo, or a clearly malformed face, hand, paw or object.
+${KIDS_PICTURE_FAULTS}`
       : `- Something appears that was not in the first frame: a person, a figure, an object, a room behind a door that opens.
 - A door, lock or object changes state when the description says it stays as it is.
 - The described action does not happen: the frames are almost the same while the words describe someone moving.
 - The person or the place turns into a different one during the clip.
-- Scribbles, streaks, flashes or melted shapes that are not part of the scene.`;
+- Scribbles, streaks, flashes or melted shapes that are not part of the scene.
+${KIDS_PICTURE_FAULTS}`;
 
-  const prompt = `You check the pictures of a vertical Egyptian horror video before its producer reviews them. ${subject}
+  const prompt = `You check the pictures of a wide 16:9 animated story for children aged 4 to 8 before its producer reviews them. ${subject}
 
 ${briefs.join("\n")}
 

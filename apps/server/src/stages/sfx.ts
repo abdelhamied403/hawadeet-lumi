@@ -5,25 +5,16 @@ export const SFX_DIR = "assets/sfx";
 
 // The effects in assets/sfx, described for the writer who picks them.
 export const SFX: Record<string, string> = {
-  knock: "three knocks on a wooden door",
-  door_creak: "a door creaking open slowly",
-  door_open: "a door latch opening",
-  door_slam: "a door shutting hard",
-  door_handle: "a locked door handle being tried",
-  lock: "a lock clicking",
-  drag: "something heavy scraping across the floor",
-  footsteps: "slow footsteps",
-  heartbeat: "a slow, heavy heartbeat",
-  heartbeat_fast: "a racing heartbeat",
-  breath: "frightened breathing",
-  wood_crack: "a sharp crack of wood",
-  keys: "keys jingling",
-  stinger: "a deep sudden hit, for a moment of shock",
-};
-
-// Effects whose licence requires a credit in the video description.
-export const SFX_CREDITS: Record<string, string> = {
-  breath: "Sound effects: Little Robot Sound Factory (www.littlerobotsoundfactory.com), CC-BY 3.0",
+  birds: "birds chirping on a sunny morning",
+  giggle: "a child giggling",
+  pop: "a light, bubbly pop, for something appearing or a small surprise",
+  whoosh: "a quick whoosh, for something flying past or a fast move",
+  sparkle: "a magical twinkling chime, for a wonderful discovery",
+  splash: "a splash of water",
+  footsteps: "light quick footsteps",
+  knock: "a friendly knock on a door",
+  meow: "a cat meowing",
+  bell: "a small bell ringing (a bicycle, a shop door, a school bell)",
 };
 
 // Chooses a sound effect for the scenes where a sound really happens. The script itself is not changed.
@@ -35,7 +26,7 @@ export async function assignSfx(story: Story): Promise<Story> {
     image: scene.imagePrompt,
     motion: scene.motionPrompt,
   }));
-  const prompt = `You are the sound designer of a short Egyptian horror video. Each scene lasts about 5 seconds and already has voice and music.
+  const prompt = `You are the sound designer of a short animated story for small children. Each scene lasts about 5 seconds and already has voice and music.
 
 Available sound effects:
 ${Object.entries(SFX).map(([tag, description]) => `- "${tag}": ${description}`).join("\n")}
@@ -44,10 +35,10 @@ Scenes:
 ${JSON.stringify(scenes)}
 
 For each scene choose ONE effect, or null.
-- Use an effect only where that sound actually happens in the scene (someone knocks, a door moves, something is dragged, he is terrified…).
-- Scene 1 always gets the effect that fits it best: the first second needs a sound that stops someone scrolling.
-- Between a third and a half of the scenes get an effect; the rest are null. Silence is part of horror.
-- "stinger" at most twice, on the biggest shocks. Do not use the same effect in two scenes in a row.
+- Use an effect only where that sound actually happens in the scene (a cat meows, someone runs, water splashes, something wonderful appears…).
+- Scene 1 gets the effect that fits it best: the first second needs a fun sound that makes a child look.
+- About a third of the scenes get an effect; the rest are null, so the voice stays clear.
+- Never anything loud or startling. Do not use the same effect in two scenes in a row.
 
 Return ONLY JSON: {"sfx": [...]} with exactly ${scenes.length} entries, each an effect name or null.`;
   try {

@@ -28,10 +28,12 @@ const POLL_SECONDS = 60;
 const CLIP_MARGIN_SECONDS = 0.25;
 const DEFAULT_SCENE_SECONDS = 5;
 // Width each motion model renders at (must match MODELS in kaggle/render.py).
-const CLIP_WIDTH: Record<MotionModel, number> = { wan5b: 704, wan14b: 480 };
+const CLIP_WIDTH: Record<MotionModel, number> = { wan5b: 1280, wan14b: 832 };
 
 // Kaggle rejects job sources over 1 MB; lip-sync voices are only sent while the job stays under this.
 const MAX_SOURCE_BYTES = 950_000;
+// JPEG quality numbers tried in turn for the pictures sent with a clips job (2 is best, 31 worst).
+const JPEG_QUALITIES = [5, 7, 9, 12];
 
 const jobSchema = z.object({
   slug: z.string(),
@@ -104,18 +106,22 @@ export async function pushRender(dir: string, model: MotionModel, options: PushR
   }
   if (scenes.length === 0) throw new Error("No scenes to render");
 
-  const images: Record<number, string> = {};
-  if (options.reuseImagesFrom) {
+  let images: Record<number, string> = {};
+  // Kaggle rejects job sources over 1 MB, so images go as JPEGs at the size the motion model works at,
+  // compressed harder (a higher JPEG quality number) when a whole chapter of them does not fit.
+  const encodeImages = async (quality: number) => {
+    const encoded: Record<number, string> = {};
     for (const scene of scenes) {
-      const source = join(paths.renderDir(dir, options.reuseImagesFrom), "images", `${sceneName(scene.index)}.png`);
+      const source = join(paths.renderDir(dir, options.reuseImagesFrom as string), "images", `${sceneName(scene.index)}.png`);
       if (!(await Bun.file(source).exists())) throw new Error(`No image to reuse: ${source}`);
-      // Kaggle rejects job sources over 1 MB, so images go as JPEGs at the size the motion model works at.
       const jpeg = join(paths.workDir(dir, jobName), `${sceneName(scene.index)}.jpg`);
       await mkdir(dirname(jpeg), { recursive: true });
-      await ffmpeg(["-i", source, "-vf", `scale=${CLIP_WIDTH[model]}:-2:flags=lanczos`, "-q:v", "5", jpeg]);
-      images[scene.index] = Buffer.from(await Bun.file(jpeg).arrayBuffer()).toString("base64");
+      await ffmpeg(["-i", source, "-vf", `scale=${CLIP_WIDTH[model]}:-2:flags=lanczos`, "-q:v", String(quality), jpeg]);
+      encoded[scene.index] = Buffer.from(await Bun.file(jpeg).arrayBuffer()).toString("base64");
     }
-  }
+    return encoded;
+  };
+  if (options.reuseImagesFrom) images = await encodeImages(JPEG_QUALITIES[0] as number);
 
   const stages = options.stages ?? ["images", "clips"];
   const lipsync: { index: number; audio: string }[] = [];
@@ -138,12 +144,20 @@ export async function pushRender(dir: string, model: MotionModel, options: PushR
       .replace(IMAGES_PLACEHOLDER, JSON.stringify(images));
   };
   let code = build();
-  // The clips matter more than their lip sync: voices are dropped from the end until the job fits.
+  // First the pictures are compressed harder, which barely shows at the motion model's size...
+  for (const quality of JPEG_QUALITIES.slice(1)) {
+    if (code.length <= MAX_SOURCE_BYTES || !options.reuseImagesFrom) break;
+    images = await encodeImages(quality);
+    code = build();
+    console.log(`pictures sent at JPEG quality ${quality} to fit Kaggle's 1 MB limit`);
+  }
+  // ...then, as the last resort, the clips matter more than their lip sync: voices are dropped from the end.
   while (code.length > MAX_SOURCE_BYTES && lipsync.length > 0) {
     lipsync.pop();
     code = build();
   }
   if (lipsync.length > 0) console.log(`lip sync for scenes ${lipsync.map((item) => item.index).join(", ")}`);
+  if (code.length > MAX_SOURCE_BYTES) throw new Error(`The job is ${Math.round(code.length / 1024)} KB, over Kaggle's 1 MB limit even with the pictures fully compressed`);
 
   const title = `veogen ${basename(resolve(dir))} ${jobName}`;
   const response = await pushJob({ username, title, code });

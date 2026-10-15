@@ -111,7 +111,7 @@ export function SeriesPlanEditor({ series, onDone }: { series: SeriesDetail; onD
                 {errors.parts?.[index]?.summary && <p className="text-xs text-destructive">{errors.parts[index].summary.message}</p>}
               </div>
               <div className="grid content-start gap-1.5">
-                <Label htmlFor={`part-${index}-cliffhanger`}>{isLast ? "Final note it ends on" : "Cliffhanger it ends on"}</Label>
+                <Label htmlFor={`part-${index}-cliffhanger`}>{isLast ? "Happy ending it closes on" : "What it ends on"}</Label>
                 <Textarea id={`part-${index}-cliffhanger`} dir="auto" rows={4} {...form.register(`parts.${index}.cliffhanger`)} />
                 {errors.parts?.[index]?.cliffhanger && <p className="text-xs text-destructive">{errors.parts[index].cliffhanger.message}</p>}
               </div>

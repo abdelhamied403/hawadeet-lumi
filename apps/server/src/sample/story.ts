@@ -2,42 +2,36 @@ import type { StoryInput } from "../schemas/story";
 
 // Hand-written story for the sample video, so the sample needs no story-writing service.
 export const sampleStory: StoryInput = {
-  title: "الباب اللي عمره ما كان موجود",
-  description: "يوسف رجع بيت جدّه المهجور، ولقى باب عمره ما شافه قبل كده.",
-  hashtags: ["#رعب", "#قصص_رعب", "#قصص_مرعبة"],
+  title: "بسبوسة والطيارة الورق",
+  description: "سلمى وقطتها بسبوسة بيدوروا على الطيارة الورق اللي طارت بعيد.",
+  hook: "الطيارة راحت فين؟",
+  hashtags: ["#حواديت", "#قصص_اطفال", "#حدوتة"],
   characterSheet:
-    "Youssef, an Egyptian man in his early thirties, short black hair, light stubble, tired dark eyes, wearing a worn dark grey jacket over a black shirt",
+    "Salma, a cheerful Egyptian girl of about seven, round face, big brown eyes, curly dark brown hair in two puffy pigtails tied with yellow ribbons, wearing a yellow t-shirt with a small white star, blue denim shorts and white sneakers",
   styleSheet:
-    "cinematic horror film still, photorealistic, 35mm, shallow depth of field, cold desaturated teal and grey palette, low-key lighting, deep shadows, light fog, film grain, vertical composition",
+    "bright 3D animated film still in a modern family-film style, soft rounded shapes, big expressive eyes, warm cheerful colour palette, soft bright lighting, gentle depth of field, wide 16:9 landscape composition",
   seed: 1234,
   scenes: [
     {
-      narration: "في ليلة ضلمة… يوسف رجع بيت جدّه المهجور، بعد عشرين سنة.",
+      narration: "الطيارة الورق… طارت لفوق خالص!",
       imagePrompt:
-        "wide shot from behind of the man standing before a decaying two-storey old Egyptian house at night, broken wooden shutters, overgrown yard, a single dim moon behind clouds, thick ground fog",
+        "low-angle close shot looking up at a bright red and yellow paper kite with a long ribbon tail flying high in a clear blue sky above the rooftops of a small Egyptian neighbourhood, a loose white string trailing down from it, fluffy white clouds, warm morning sunlight from the left",
       motionPrompt:
-        "The man walks slowly toward the front door of the old house. Fog drifts across the ground, the tree branches sway slightly, the camera pushes in slowly behind him.",
+        "The red and yellow kite climbs higher into the blue sky, its ribbon tail fluttering in the breeze, the loose string swinging below it, clouds drifting slowly; the camera stays fixed.",
     },
     {
-      narration: "كل حاجة كانت زي ما سابها… إلا باب واحد، عمره ما كان موجود قبل كده.",
+      narration: "سلمى بصّت لفوق وقالت: يا خبر!",
       imagePrompt:
-        "the man holding a flashlight in a narrow dusty corridor with peeling wallpaper and old framed photographs, at the far end an old dark wooden door with faint light leaking from under it",
+        "medium shot of the little girl standing on a sunny rooftop with potted plants and a line of colourful laundry, her face turned up to the sky, her mouth open in surprise, one hand on her cheek and the other pointing up, a small orange cat sitting by her feet looking up too, warm morning light",
       motionPrompt:
-        "The flashlight beam trembles and sweeps across the wall, dust floats through the light, the man takes a slow careful step forward toward the door.",
+        "The little girl lifts her pointing hand higher and says her line, her eyes following the sky; the orange cat by her feet tilts its head up; the laundry sways gently; the camera pushes in very slowly.",
     },
     {
-      narration: "ومن ورا الباب… سمع صوت بيهمس باسمه. صوت جدّه… اللي مات.",
+      narration: "وبسبوسة قالت: ماتخافيش… هنلاقيها سوا!",
       imagePrompt:
-        "extreme close-up of the man's face in profile, his ear close to the dark wooden door, eyes wide with fear, cold sweat on his forehead, lit only by a weak flashlight from below",
+        "close shot of a small fluffy orange cat with white paws and a green collar standing on its hind legs on the rooftop, one paw raised confidently, a big friendly smile, the little girl's yellow sneakers visible behind it, potted plants and blue sky in the background, bright warm light",
       motionPrompt:
-        "He slowly leans closer to the door, his eyes widen, his breathing quickens and a faint breath of mist leaves his mouth. The light flickers.",
-    },
-    {
-      narration: "مدّ إيده عشان يفتح الباب… بس الباب اتفتح من جوّه الأول.",
-      imagePrompt:
-        "close-up of the man's trembling hand reaching for a rusty brass door handle, the door slightly ajar with pitch-black darkness in the gap, long pale thin fingers gripping the door edge from inside",
-      motionPrompt:
-        "The door creaks open slowly on its own, the pale fingers curl around the edge of the door, the man's hand freezes in the air and pulls back.",
+        "The orange cat raises its paw higher and speaks its line with a big smile, its tail swishing happily from side to side, a soft breeze moving its fur; the camera stays fixed.",
     },
   ],
 };

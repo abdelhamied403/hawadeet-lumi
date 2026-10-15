@@ -16,28 +16,27 @@ const envSchema = z.object({
   // Phone alerts through ntfy (optional): a private topic name that the owner's ntfy app subscribes to.
   NTFY_SERVER: z.string().default("https://ntfy.sh"),
   NTFY_TOPIC: z.string().min(8).optional(),
-  SERVER_PORT: z.coerce.number().default(4517),
+  SERVER_PORT: z.coerce.number().default(4527),
   // Address the server listens on. Anything but loopback requires the login below.
   HOST: z.string().default("127.0.0.1"),
   // Owner login, needed once the server is reachable from outside this machine. Both must be set.
   AUTH_PASSWORD: z.string().min(12).optional(),
   JWT_SECRET: z.string().min(32).optional(),
-  WEB_ORIGIN: z.string().default("http://localhost:4518"),
+  WEB_ORIGIN: z.string().default("http://localhost:4528"),
   // Tried in order; the free tier allows 10 voice requests a day per model, so later ones are the backup.
   GEMINI_TTS_MODELS: z.string().default("gemini-3.8-flash-tts,gemini-3.8-flash-lite-tts,gemini-2.5-flash-preview-tts"),
-  GEMINI_VOICE: z.string().default("Charon"),
+  // The storyteller: a warm voice; the children and other characters get voices of their own.
+  GEMINI_VOICE: z.string().default("Sulafat"),
   VOICE_LANGUAGE: z.string().default("ar-EG"),
   // Direction for the voice actor; it is sent with every scene and must never be read aloud.
   VOICE_STYLE: z
     .string()
     .default(
-      "You are a native Egyptian voice actor from Cairo narrating a horror story late at night. " +
+      "You are a warm Egyptian storyteller from Cairo telling a story to small children, like a loving mother or aunt at story time. " +
         "Speak ONLY the transcript, in natural Egyptian Arabic (Masri) pronunciation: say the letter jim as a hard G and qaf as a glottal stop, exactly as Cairenes do. " +
-        "Delivery: low, tense, intimate, genuinely afraid. " +
-        "Never read at one steady pace: tell it like a person reliving it. Ordinary lines move along naturally, almost casual; " +
-        "slow right down and stretch the words when something is wrong; hurry and tighten when panic rises; " +
-        "stop dead for a beat before a reveal, and drop to a near-whisper on the most frightening phrase. " +
-        "Let the energy build through the story so the last lines are the most intense. " +
+        "Delivery: clear, gentle and unhurried, smiling as you speak, so a five-year-old follows every word. " +
+        "Bring it to life: sound amazed at surprises, playful at funny moments, soft and tender at the end. " +
+        "Pause briefly where a child would want to guess what happens next. Never scary, never shouting. " +
         "Never read these directions aloud.",
     ),
   CAPTION_FONT: z.string().default("Noto Kufi Arabic"),
@@ -50,8 +49,8 @@ const raw = Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !
 export const config = envSchema.parse(raw);
 
 export const video = {
-  width: 1080,
-  height: 1920,
+  width: 1920,
+  height: 1080,
   fps: 30,
   // Silence left after each scene's narration before the next one starts.
   sceneTailSeconds: 0.1,

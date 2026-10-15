@@ -20,6 +20,7 @@ const settingsFormSchema = z.object({
   dailyTime: z.string().regex(/^\d{2}:\d{2}$/, "Use a time like 09:00"),
   scenesPerPart: z.number({ error: "Enter a number" }).int().min(4, "At least 4 scenes").max(24, "At most 24 scenes"),
   partsPerSeries: z.number({ error: "Enter a number" }).int().min(2, "At least 2 parts").max(12, "At most 12 parts"),
+  brandName: z.string().trim().max(40, "At most 40 characters"),
 });
 type SettingsForm = z.infer<typeof settingsFormSchema>;
 
@@ -34,10 +35,12 @@ export default function SettingsPage() {
   const { data, error } = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const form = useForm<SettingsForm>({
     resolver: zodResolver(settingsFormSchema),
-    defaultValues: { autoCreate: true, dailyTime: "09:00", scenesPerPart: 16, partsPerSeries: 6 },
+    defaultValues: { autoCreate: true, dailyTime: "09:00", scenesPerPart: 16, partsPerSeries: 5, brandName: "" },
   });
   useEffect(() => {
-    if (data) form.reset({ autoCreate: data.autoCreate, dailyTime: data.dailyTime, scenesPerPart: data.scenesPerPart, partsPerSeries: data.partsPerSeries });
+    if (data) {
+      form.reset({ autoCreate: data.autoCreate, dailyTime: data.dailyTime, scenesPerPart: data.scenesPerPart, partsPerSeries: data.partsPerSeries, brandName: data.brandName });
+    }
   }, [data, form]);
   const save = useMutation({
     mutationFn: updateSettings,
@@ -49,6 +52,8 @@ export default function SettingsPage() {
   });
   const errors = form.formState.errors;
   const scenes = form.watch("scenesPerPart") || 0;
+  const parts = form.watch("partsPerSeries") || 0;
+  const storyHours = (scenes * parts * 19) / 60;
 
   if (error) return <p className="text-destructive">{errorMessage(error)}</p>;
   if (!data) return <p className="text-muted-foreground">Loading…</p>;
@@ -58,9 +63,16 @@ export default function SettingsPage() {
       <form onSubmit={form.handleSubmit((values) => save.mutate(values))} className="grid gap-6">
         <h1 className="font-display text-4xl font-extrabold uppercase tracking-wide">Settings</h1>
 
+        <div className="grid gap-1.5">
+          <Label htmlFor="brandName">Page and channel name</Label>
+          <Input id="brandName" dir="auto" placeholder="حواديت توتة" {...form.register("brandName")} />
+          <p className="text-sm text-muted-foreground">Used in video descriptions and Page posts. Leave empty until the name is chosen.</p>
+          {errors.brandName && <p className="text-xs text-destructive">{errors.brandName.message}</p>}
+        </div>
+
         <div className="flex items-start justify-between gap-6 rounded-lg border bg-card p-4">
           <div>
-            <Label htmlFor="autoCreate">Write a new part every day</Label>
+            <Label htmlFor="autoCreate">Write a new chapter every day</Label>
             <p className="mt-1 text-sm text-muted-foreground">
               Only the script is written automatically. Nothing else is made until you approve it.
             </p>
@@ -79,19 +91,19 @@ export default function SettingsPage() {
             {errors.dailyTime && <p className="text-xs text-destructive">{errors.dailyTime.message}</p>}
           </div>
           <div className="grid content-start gap-1.5">
-            <Label htmlFor="scenesPerPart">Scenes per part</Label>
+            <Label htmlFor="scenesPerPart">Scenes per chapter</Label>
             <Input id="scenesPerPart" type="number" min={4} max={24} {...form.register("scenesPerPart", { valueAsNumber: true })} />
             {errors.scenesPerPart && <p className="text-xs text-destructive">{errors.scenesPerPart.message}</p>}
           </div>
           <div className="grid content-start gap-1.5">
-            <Label htmlFor="partsPerSeries">Parts per series</Label>
+            <Label htmlFor="partsPerSeries">Chapters per story</Label>
             <Input id="partsPerSeries" type="number" min={2} max={12} {...form.register("partsPerSeries", { valueAsNumber: true })} />
             {errors.partsPerSeries && <p className="text-xs text-destructive">{errors.partsPerSeries.message}</p>}
           </div>
         </div>
         <p className="font-mono text-xs text-muted-foreground">
-          {scenes} scenes ≈ {Math.round(scenes * 5)} s of video and about {((scenes * 19) / 60).toFixed(1)} GPU hours per part (30 free hours a week).
-          Parts per series applies to the next series.
+          {scenes} scenes ≈ {Math.round(scenes * 5)} s of video and about {((scenes * 19) / 60).toFixed(1)} GPU hours per chapter. The whole story needs
+          about {storyHours.toFixed(0)} of the 30 free GPU hours a week{storyHours > 27 ? ", which leaves no room for redos" : ""}. Chapters per story applies to the next story.
         </p>
         <div>
           <Button type="submit" disabled={save.isPending || !form.formState.isDirty}>

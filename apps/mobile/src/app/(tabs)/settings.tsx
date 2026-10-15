@@ -25,6 +25,7 @@ const settingsFormSchema = z.object({
   postsPerDay: z.number({ error: "Enter a number" }).int("Enter a whole number").min(0, "0 turns Page posts off").max(3, "At most 3 a day"),
   youtubeUrl: z.union([z.literal(""), z.url("Paste the full link, starting with https://")]),
   notifications: z.boolean(),
+  brandName: z.string().trim().max(40, "At most 40 characters"),
 });
 type SettingsForm = z.infer<typeof settingsFormSchema>;
 
@@ -41,7 +42,7 @@ export default function SettingsScreen() {
   const { data, error, refetch, isRefetching } = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const form = useForm<SettingsForm>({
     resolver: zodResolver(settingsFormSchema),
-    defaultValues: { autoCreate: true, dailyTime: "09:00", publishTime: "22:00", scenesPerPart: 16, partsPerSeries: 6, postsPerDay: 1, youtubeUrl: "", notifications: true },
+    defaultValues: { autoCreate: true, dailyTime: "09:00", publishTime: "22:00", scenesPerPart: 16, partsPerSeries: 5, postsPerDay: 1, youtubeUrl: "", notifications: true, brandName: "" },
   });
   useEffect(() => {
     if (data) {
@@ -54,6 +55,7 @@ export default function SettingsScreen() {
         postsPerDay: data.postsPerDay,
         youtubeUrl: data.youtubeUrl,
         notifications: data.notifications,
+        brandName: data.brandName,
       });
     }
   }, [data, form]);
@@ -68,6 +70,8 @@ export default function SettingsScreen() {
   const signOut = useMutation({ mutationFn: session.signOut });
   const errors = form.formState.errors;
   const scenes = useWatch({ control: form.control, name: "scenesPerPart" }) || 0;
+  const parts = useWatch({ control: form.control, name: "partsPerSeries" }) || 0;
+  const storyHours = (scenes * parts * 19) / 60;
 
   if (!data) return error ? <Failure message={errorMessage(error)} onRetry={() => void refetch()} /> : <Loading />;
 
@@ -114,17 +118,29 @@ export default function SettingsScreen() {
           When you schedule a finished part, it goes out at this time on the next free day, one part a day. Parts already scheduled keep the time
           they were given.
         </Meta>
-        <NumberField control={form.control} name="scenesPerPart" label="Scenes per part" message={errors.scenesPerPart?.message} />
-        <NumberField control={form.control} name="partsPerSeries" label="Parts per series" message={errors.partsPerSeries?.message} />
+        <NumberField control={form.control} name="scenesPerPart" label="Scenes per chapter" message={errors.scenesPerPart?.message} />
+        <NumberField control={form.control} name="partsPerSeries" label="Chapters per story" message={errors.partsPerSeries?.message} />
         <Meta className="leading-5">
-          {scenes} scenes ≈ {Math.round(scenes * 5)} s of video and about {((scenes * 19) / 60).toFixed(1)} GPU hours per part (30 free hours a week). Parts
-          per series applies to the next series.
+          {scenes} scenes ≈ {Math.round(scenes * 5)} s of video and about {((scenes * 19) / 60).toFixed(1)} GPU hours per chapter. The whole story needs
+          about {storyHours.toFixed(0)} of the 30 free GPU hours a week{storyHours > 27 ? ", which leaves no room for redos" : ""}. Chapters per story
+          applies to the next story.
         </Meta>
         <NumberField control={form.control} name="postsPerDay" label="Page posts drafted per day" message={errors.postsPerDay?.message} />
         <Meta className="leading-5">
           Short posts that keep followers talking between videos, drafted after the daily time. They wait in Posts until you publish them. 0 turns
           them off.
         </Meta>
+        <Controller
+          control={form.control}
+          name="brandName"
+          render={({ field }) => (
+            <View className="gap-1.5">
+              <Field label="Page and channel name" value={field.value} onChangeText={field.onChange} onBlur={field.onBlur} placeholder="حواديت توتة" />
+              <FieldError message={errors.brandName?.message} />
+            </View>
+          )}
+        />
+        <Meta className="leading-5">Used in video descriptions and Page posts. Leave empty until the name is chosen.</Meta>
         <Controller
           control={form.control}
           name="youtubeUrl"

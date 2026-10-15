@@ -83,6 +83,8 @@ export type UploadVideoPayload = {
   title: string;
   description: string;
   tags?: string[];
+  // When set (ISO time), the video stays private until then and YouTube makes it public by itself.
+  publishAt?: string;
 };
 
 export type UploadVideoResponse = {
@@ -93,7 +95,7 @@ export type UploadVideoResponse = {
   privacy: "public" | "unlisted" | "private";
 };
 
-// Uploads a video as public, in Google's two steps: describe it, then send the bytes.
+// Uploads a video, public at once or at `publishAt`, in Google's two steps: describe it, then send the bytes.
 export async function uploadVideo(payload: UploadVideoPayload): Promise<UploadVideoResponse> {
   try {
     const file = Bun.file(payload.videoPath);
@@ -104,13 +106,20 @@ export async function uploadVideo(payload: UploadVideoPayload): Promise<UploadVi
           title: payload.title.slice(0, 100),
           description: payload.description.slice(0, 4900),
           tags: payload.tags,
-          // Entertainment.
-          categoryId: "24",
+          // Film & Animation.
+          categoryId: "1",
           defaultLanguage: "ar",
           defaultAudioLanguage: "ar",
         },
-        // The videos are AI-made and say so, which YouTube asks uploaders to declare.
-        status: { privacyStatus: "public", selfDeclaredMadeForKids: false, containsSyntheticMedia: true },
+        // The videos are for children, which YouTube requires uploaders to declare (it turns off comments and
+        // personalised ads). They are clearly animated cartoons, which YouTube's altered-or-synthetic label
+        // does not cover: it is for content a viewer could take for real people, places or events.
+        status: {
+          privacyStatus: payload.publishAt ? "private" : "public",
+          ...(payload.publishAt ? { publishAt: payload.publishAt } : {}),
+          selfDeclaredMadeForKids: true,
+          containsSyntheticMedia: false,
+        },
       },
       {
         params: { uploadType: "resumable", part: "snippet,status" },
@@ -128,6 +137,59 @@ export async function uploadVideo(payload: UploadVideoPayload): Promise<UploadVi
       headers: { Authorization: `Bearer ${payload.accessToken}`, "Content-Type": "video/mp4" },
     });
     return { videoId: sent.data.id, url: `https://www.youtube.com/watch?v=${sent.data.id}`, privacy: sent.data.status?.privacyStatus ?? "private" };
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type CreatePlaylistPayload = { accessToken: string; title: string; description: string };
+
+// A public playlist on the channel; returns its id.
+export async function createPlaylist(payload: CreatePlaylistPayload): Promise<string> {
+  try {
+    const response = await youtubeHttp.post<{ id: string }>(
+      "/youtube/v3/playlists",
+      {
+        snippet: { title: payload.title.slice(0, 150), description: payload.description.slice(0, 4900), defaultLanguage: "ar" },
+        status: { privacyStatus: "public" },
+      },
+      { params: { part: "snippet,status" }, headers: { Authorization: `Bearer ${payload.accessToken}` } },
+    );
+    return response.data.id;
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type AddToPlaylistPayload = { accessToken: string; playlistId: string; videoId: string; position?: number };
+
+export async function addToPlaylist(payload: AddToPlaylistPayload): Promise<void> {
+  try {
+    await youtubeHttp.post(
+      "/youtube/v3/playlistItems",
+      {
+        snippet: {
+          playlistId: payload.playlistId,
+          resourceId: { kind: "youtube#video", videoId: payload.videoId },
+          ...(payload.position === undefined ? {} : { position: payload.position }),
+        },
+      },
+      { params: { part: "snippet" }, headers: { Authorization: `Bearer ${payload.accessToken}` } },
+    );
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type SetThumbnailPayload = { accessToken: string; videoId: string; imagePath: string };
+
+// Sets a video's cover picture (JPEG under 2 MB). Only a channel verified by phone may set its own.
+export async function setThumbnail(payload: SetThumbnailPayload): Promise<void> {
+  try {
+    await uploadHttp.post("https://www.googleapis.com/upload/youtube/v3/thumbnails/set", Buffer.from(await Bun.file(payload.imagePath).arrayBuffer()), {
+      params: { videoId: payload.videoId, uploadType: "media" },
+      headers: { Authorization: `Bearer ${payload.accessToken}`, "Content-Type": "image/jpeg" },
+    });
   } catch (error) {
     throw describeError(error);
   }

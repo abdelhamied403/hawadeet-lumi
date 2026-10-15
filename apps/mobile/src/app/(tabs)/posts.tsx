@@ -89,7 +89,7 @@ function NewPost() {
               onBlur={field.onBlur}
               multiline
               className="min-h-16"
-              placeholder="For example: ask who would open the door"
+              placeholder="For example: ask what their child would name the cat"
             />
             <FieldError message={form.formState.errors.idea?.message} />
           </View>

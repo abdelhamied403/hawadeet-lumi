@@ -1,24 +1,29 @@
 import { mkdir, rm } from "node:fs/promises";
-import { addDays, format, set } from "date-fns";
+import { addDays, addHours, format, set } from "date-fns";
 import { config } from "../config";
 import { ffmpeg } from "../lib/ffmpeg";
 import { paths, saveStory } from "../lib/project";
 import { publishPagePost, publishReel } from "../services/facebook";
 import { sendAlert, type SendAlertPayload } from "../services/ntfy";
-import { refreshAccessToken, uploadVideo } from "../services/youtube";
+import { QuotaExceededError } from "../services/gemini";
+import { addToPlaylist, createPlaylist, refreshAccessToken, setThumbnail, uploadVideo } from "../services/youtube";
 import { collectReport, collectYoutube, summarizeReport } from "../stages/analytics";
-import { runFullStory } from "../stages/fullstory";
-import { runAssemble } from "../stages/assemble";
-import { SFX_CREDITS } from "../stages/sfx";
+import { runFullStory, runShort } from "../stages/fullstory";
+import { hearScenes } from "../stages/hear";
+import { runThumbnail } from "../stages/thumbnail";
+import { runAssemble, type MusicMood } from "../stages/assemble";
 import { checkScenes, type SceneFlag } from "../stages/check";
 import { directMotion } from "../stages/motion";
 import { AI_NOTE, writePagePost, type PostStill } from "../stages/posts";
+import { getGpuQuota, type GpuQuotaResponse } from "../services/kaggle";
 import { fetchRender, pushRender, type MotionModel } from "../stages/render";
-import { writePlaces, writeSeriesBible, writeSeriesPart } from "../stages/series";
-import { runVoice } from "../stages/voice";
+import { writeArabicNames, writePlaces, writeSeriesBible, writeSeriesPart } from "../stages/series";
+import { runStoryVoice, runVoice } from "../stages/voice";
+import { chapterGpuSeconds, estimateStep } from "./estimates";
 import {
   createEpisode,
   createPost,
+  addCorrections,
   createSeries,
   getEpisode,
   getPost,
@@ -26,6 +31,7 @@ import {
   getSettings,
   getStep,
   getSteps,
+  listCorrections,
   listEpisodes,
   listPosts,
   listReports,
@@ -40,6 +46,8 @@ import {
   saveSeriesBible,
   setSeriesStatus,
   STEP_NAMES,
+  STEP_NEEDS,
+  stepsBuiltOn,
   updatePost,
   updateStep,
   type Episode,
@@ -52,11 +60,25 @@ import {
 } from "./store";
 
 export const MODEL: MotionModel = "wan14b";
+// Lip sync is off: on the cartoon faces it was not visible, and it costs GPU time and room in each job.
+// The motion description already has whoever speaks move their mouth.
+const LIP_SYNC = false;
 const KAGGLE_POLL_MS = 60_000;
-const MAX_EPISODES_IN_PROGRESS = 2;
+// The music is Kevin MacLeod's under CC BY 4.0, which asks for this credit wherever a track is used.
 const MUSIC_CREDIT = `Kevin MacLeod (incompetech.com)\nLicensed under Creative Commons: By Attribution 4.0 License\nhttp://creativecommons.org/licenses/by/4.0/`;
-// Asks viewers to follow the Page; worded to fit any part of a series, the last one included.
-const FOLLOW_LINE = "تابعوا عتمة عشان كل جزء جديد يوصلكم أول ما ينزل 🕯️";
+const musicCredit = (tracks: string[]) => tracks.map((track) => `Music: "${track}" ${MUSIC_CREDIT}`);
+
+// The track a chapter's video was made with, as its title (no file extension); "" before it is made.
+async function musicTrack(episode: Episode): Promise<string> {
+  const file = Bun.file(`${episode.dir}/music.txt`);
+  return (await file.exists()) ? (await file.text()).trim().replace(/\.[^.]+$/, "") : "";
+}
+
+// Asks viewers to subscribe; worded to fit any chapter of a story, the last one included.
+function followLine(): string {
+  const brand = getSettings().brandName;
+  return `اشتركوا في ${brand || "القناة"} عشان كل حدوتة جديدة توصلكم أول ما تنزل 🌟`;
+}
 
 // Steps running inside this process; anything marked running but missing here was cut off by a restart.
 const localTasks = new Set<string>();
@@ -66,6 +88,13 @@ let ticking = false;
 
 const taskKey = (episodeId: number, step: StepName) => `${episodeId}:${step}`;
 const sceneNumbers = (episode: Episode) => (episode.story?.scenes ?? []).map((_, index) => index + 1);
+// Scenes with nobody in them (a place, an object) get no GPU clip: the video moves slowly over their still
+// picture instead, which looks the same for a landscape and saves about a quarter of an hour of GPU each.
+// Older stories without "shows" animate every scene.
+const isStill = (episode: Episode, number: number) => episode.story?.scenes[number - 1]?.shows?.length === 0;
+// The scenes a step makes on the GPU: every scene's picture, but clips only where someone is in it.
+const gpuScenes = (episode: Episode, step: "images" | "clips", scenes = sceneNumbers(episode)) =>
+  step === "images" ? scenes : scenes.filter((number) => !isStill(episode, number));
 
 // Network errors that mean "no connection right now", as opposed to a refusal by the service.
 const OFFLINE = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|ECONNRESET|ETIMEDOUT/;
@@ -86,8 +115,9 @@ export async function alert(payload: Omit<SendAlertPayload, "topic">, options: {
 
 const STEP_LABELS: Record<StepName, string> = { story: "Script", voice: "Voice", images: "Images", clips: "Motion", video: "Final cut", publish: "Publish" };
 
-// Tells the owner a step now needs them: it is ready to review, or it failed.
+// Tells the owner a step failed. Steps ready for review are looked at by the director, not the owner.
 function alertStep(episodeId: number, step: StepName, outcome: "review" | "failed", detail?: string): void {
+  if (outcome === "review") return;
   const part = getEpisode(episodeId)?.partNumber ?? episodeId;
   const title =
     outcome === "failed" ? `Part ${part}: ${STEP_LABELS[step]} failed` : step === "publish" ? `Part ${part} is ready to publish` : `Part ${part}: ${STEP_LABELS[step]} ready for review`;
@@ -107,14 +137,15 @@ function fail(episodeId: number, step: StepName, error: unknown): void {
   alertStep(episodeId, step, "failed", message.split("\n")[0]);
 }
 
-function runLocal(episode: Episode, step: StepName, work: () => Promise<void>): void {
+// The work may return a line for the "ready for review" alert.
+function runLocal(episode: Episode, step: StepName, work: () => Promise<string | void>): void {
   const key = taskKey(episode.id, step);
   localTasks.add(key);
-  updateStep(episode.id, step, { status: "running", error: null, meta: { startedAt: new Date().toISOString() } });
+  updateStep(episode.id, step, { status: "running", error: null, meta: { startedAt: new Date().toISOString(), waitingFor: undefined } });
   work()
-    .then(() => {
+    .then((detail) => {
       updateStep(episode.id, step, { status: "review" });
-      alertStep(episode.id, step, "review");
+      alertStep(episode.id, step, "review", detail || undefined);
     })
     .catch((error) => {
       // With the laptop offline nothing is wrong with the step: it waits and tries again on a later tick.
@@ -144,7 +175,7 @@ async function publishedStills(seriesId: number): Promise<Buffer[]> {
   return stills;
 }
 
-async function writeStory(episode: Episode, meta: StepMeta): Promise<void> {
+async function writeStory(episode: Episode, meta: StepMeta): Promise<string | undefined> {
   const series = getSeries(episode.seriesId);
   if (!series) throw new Error("The episode's series no longer exists");
   const previous = listEpisodes({ seriesId: series.id })
@@ -160,7 +191,12 @@ async function writeStory(episode: Episode, meta: StepMeta): Promise<void> {
     bible = { ...bible, ...(await writePlaces(bible, previous, await publishedStills(series.id))) };
     saveSeriesBible(series.id, bible);
   }
-  const story = await writeSeriesPart({
+  // Likewise a series planned before places and objects had Arabic names gets them once.
+  if ([...bible.places, ...bible.props].some((thing) => !thing.nameArabic)) {
+    bible = await writeArabicNames(bible);
+    saveSeriesBible(series.id, bible);
+  }
+  const { story, flags } = await writeSeriesPart({
     bible,
     partNumber: episode.partNumber,
     scenes: getSettings().scenesPerPart,
@@ -168,15 +204,46 @@ async function writeStory(episode: Episode, meta: StepMeta): Promise<void> {
     seed: series.seed,
     current: meta.note ? (episode.story ?? undefined) : undefined,
     note: meta.note,
+    corrections: listCorrections(),
   });
   saveEpisodeStory(episode.id, story);
   await saveStory(episode.dir, story);
+  updateStep(episode.id, "story", { meta: { flags } });
+  if (flags.length === 0) return undefined;
+  const scenes = flags.filter((flag) => flag.scene > 0).map((flag) => flag.scene);
+  return flags.some((flag) => flag.scene === 0)
+    ? "It was not proofread."
+    : `The proofreader flagged ${scenes.length === 1 ? "scene" : "scenes"} ${scenes.join(", ")}.`;
+}
+
+// Kaggle is asked for the GPU allowance at most every few minutes, however often it is needed.
+const QUOTA_TTL_MS = 5 * 60_000;
+let quotaCache: { at: number; value: GpuQuotaResponse | null } = { at: 0, value: null };
+
+export async function cachedGpuQuota(): Promise<GpuQuotaResponse | null> {
+  if (Date.now() - quotaCache.at > QUOTA_TTL_MS) {
+    quotaCache = { at: Date.now(), value: await getGpuQuota().catch(() => quotaCache.value) };
+  }
+  return quotaCache.value;
+}
+
+// When the weekly GPU allowance is too small for this much work: when it resets, else null.
+// An allowance that cannot be read never holds anything up.
+async function gpuShortfall(seconds: number): Promise<string | null> {
+  const quota = await cachedGpuQuota();
+  if (!quota || quota.allowedSeconds === 0) return null;
+  return quota.allowedSeconds - quota.usedSeconds >= seconds ? null : (quota.refreshesAt ?? "the weekly reset");
 }
 
 async function startRender(episode: Episode, step: "images" | "clips", meta: StepMeta): Promise<void> {
-  const scenes = meta.scenes?.length ? meta.scenes : sceneNumbers(episode);
+  const scenes = gpuScenes(episode, step, meta.scenes?.length ? meta.scenes : sceneNumbers(episode));
+  // Only still scenes asked for: nothing to make on the GPU.
+  if (scenes.length === 0) {
+    updateStep(episode.id, step, { status: "review", error: null, meta: { waitingFor: undefined } });
+    return;
+  }
   // Marked first, so the next tick does not start the same job while this one prepares.
-  updateStep(episode.id, step, { status: "running", error: null, meta: { startedAt: new Date().toISOString() } });
+  updateStep(episode.id, step, { status: "running", error: null, meta: { startedAt: new Date().toISOString(), waitingForGpu: undefined, waitingFor: undefined } });
   if (step === "clips" && episode.story) {
     // Each motion description is rewritten against the approved image. If that fails, the script's own is used.
     try {
@@ -203,7 +270,7 @@ async function startRender(episode: Episode, step: "images" | "clips", meta: Ste
       imageSeedBump: step === "images" ? meta.attempt : 0,
       clipSeedBump: step === "clips" ? meta.attempt : 0,
       reuseImagesFrom: step === "clips" ? MODEL : undefined,
-      lipSync: step === "clips",
+      lipSync: step === "clips" && LIP_SYNC,
     });
     // The clock for the estimate starts when the job is really on Kaggle, not while it was being prepared.
     updateStep(episode.id, step, { meta: { jobUrl, startedAt: new Date().toISOString() } });
@@ -216,7 +283,7 @@ async function startRender(episode: Episode, step: "images" | "clips", meta: Ste
 // A check that cannot run never holds up the review: the step simply arrives without new flags.
 async function checkRender(episode: Episode, step: "images" | "clips"): Promise<SceneFlag[]> {
   const meta = getStep(episode.id, step).meta;
-  const redone = meta.scenes?.length ? meta.scenes : sceneNumbers(episode);
+  const redone = gpuScenes(episode, step, meta.scenes?.length ? meta.scenes : sceneNumbers(episode));
   const kept = (meta.flags ?? []).filter((flag) => !redone.includes(flag.scene));
   if (!episode.story) return kept;
   try {
@@ -236,7 +303,7 @@ async function pollRender(episode: Episode, step: "images" | "clips"): Promise<v
     const result = await fetchRender(episode.dir, MODEL, { jobName: step });
     if (result.status === "queued" || result.status === "running") return;
     const missing: number[] = [];
-    for (const scene of sceneNumbers(episode)) {
+    for (const scene of gpuScenes(episode, step)) {
       const file =
         step === "images"
           ? `${paths.renderDir(episode.dir, MODEL)}/images/scene-${String(scene).padStart(2, "0")}.png`
@@ -256,41 +323,146 @@ async function pollRender(episode: Episode, step: "images" | "clips"): Promise<v
   }
 }
 
-async function advance(episode: Episode): Promise<void> {
-  const step = getSteps(episode.id).find((candidate) => candidate.status !== "approved");
-  if (!step) return;
-  const { name, status, meta } = step;
+// Notes why a queued step has not started, once, so the apps can show it.
+function wait(episode: Episode, name: StepName, meta: StepMeta, reason: string): void {
+  if (meta.waitingFor !== reason) updateStep(episode.id, name, { meta: { waitingFor: reason } });
+}
 
-  if (status === "running") {
-    if (name === "images" || name === "clips") await pollRender(episode, name);
-    else if (!localTasks.has(taskKey(episode.id, name))) updateStep(episode.id, name, { status: "queued" });
-    return;
+// The Kaggle account runs one GPU job at a time, so a job only starts when no chapter has one running.
+function gpuBusy(): boolean {
+  return listEpisodes({ status: "in_progress" }).some((episode) =>
+    getSteps(episode.id).some((step) => (step.name === "images" || step.name === "clips") && step.status === "running"),
+  );
+}
+
+// The GPU job that goes next: the earliest chapter's, so a redo of chapter 1 (and then its clips) goes before
+// chapter 3's first pictures, and chapters are finished in story order.
+function nextGpuJob(): string | null {
+  const chapters = listEpisodes({ status: "in_progress" }).sort((a, b) => a.seriesId - b.seriesId || a.partNumber - b.partNumber);
+  for (const episode of chapters) {
+    for (const name of ["images", "clips"] as const) {
+      if (getStep(episode.id, name).status === "queued") return taskKey(episode.id, name);
+    }
   }
-  if (status !== "queued") return;
+  return null;
+}
 
+// Every step that is running or ready is moved on: the voice and the images are made at the same time.
+async function advance(episode: Episode): Promise<void> {
+  for (const step of getSteps(episode.id)) {
+    if (step.status === "running") {
+      if (step.name === "images" || step.name === "clips") await pollRender(episode, step.name);
+      else if (!localTasks.has(taskKey(episode.id, step.name))) updateStep(episode.id, step.name, { status: "queued" });
+    } else if (step.status === "queued") {
+      await start(episode, step.name, step.meta);
+    }
+  }
+}
+
+async function start(episode: Episode, name: StepName, meta: StepMeta): Promise<void> {
   switch (name) {
-    case "story":
+    case "story": {
+      // Each chapter is written from the ones before it, so it waits until they are written.
+      const unwritten = listEpisodes({ seriesId: episode.seriesId }).find(
+        (other) => other.partNumber < episode.partNumber && other.status !== "cancelled" && !other.story,
+      );
+      if (unwritten) return wait(episode, name, meta, `chapter ${unwritten.partNumber} to be written`);
       runLocal(episode, name, () => writeStory(episode, meta));
       return;
+    }
     case "voice":
-      runLocal(episode, name, async () => {
-        await runVoice(episode.dir, { force: true, styleNote: meta.note });
-      });
+      startVoice(episode, meta);
       return;
     case "images":
-    case "clips":
+    case "clips": {
+      if (gpuBusy()) return wait(episode, name, meta, "another chapter's GPU job to finish");
+      if (nextGpuJob() !== taskKey(episode.id, name)) return wait(episode, name, meta, "an earlier chapter's GPU job to go first");
+      // A job Kaggle cannot finish this week waits for the reset instead of being cut off halfway.
+      const resetsAt = await gpuShortfall(estimateStep({ name, status: "queued", meta, error: null, updatedAt: "" }, gpuScenes(episode, name).length).estimateSeconds ?? 0);
+      if (resetsAt) {
+        if (meta.waitingForGpu !== resetsAt) updateStep(episode.id, name, { meta: { waitingForGpu: resetsAt } });
+        return;
+      }
       await startRender(episode, name, meta);
       return;
+    }
     case "video":
       runLocal(episode, name, async () => {
-        await runAssemble(episode.dir, MODEL, { musicTrack: meta.musicTrack, musicVolume: meta.musicVolume, sfxVolume: meta.sfxVolume });
+        await runAssemble(episode.dir, MODEL, { mood: musicMood(episode), musicTrack: meta.musicTrack, musicVolume: meta.musicVolume, sfxVolume: meta.sfxVolume });
       });
       return;
     case "publish":
-      // Nothing to prepare: it waits for the owner to press Publish.
-      updateStep(episode.id, name, { status: "review" });
-      alertStep(episode.id, name, "review");
+      // A finished chapter waits here; once every chapter is finished the whole story goes out together.
+      updateStep(episode.id, name, { status: "review", meta: { waitingFor: "the other chapters, then the story goes to YouTube" } });
   }
+}
+
+// Gemini's free voice requests run out for the day; recording tries again once they reset at midnight
+// Pacific time (08:00 UTC, an hour late in summer, which is harmless).
+let voiceBlockedUntil = 0;
+const nextVoiceReset = () => {
+  const reset = new Date();
+  reset.setUTCHours(8, 0, 0, 0);
+  if (reset.getTime() <= Date.now()) reset.setUTCDate(reset.getUTCDate() + 1);
+  return reset.getTime();
+};
+
+// The first recording of a story waits for every chapter's approved script and records them all
+// together, which costs about as many requests as one chapter. A redo records its own chapter only.
+function startVoice(episode: Episode, meta: StepMeta): void {
+  if (Date.now() < voiceBlockedUntil) return wait(episode, "voice", meta, "tomorrow's free voice requests");
+  if (meta.note || meta.attempt > 0) {
+    runVoiceTask([episode], () => runVoice(episode.dir, { force: true, styleNote: meta.note }).then(() => undefined));
+    return;
+  }
+  const chapters = listEpisodes({ seriesId: episode.seriesId })
+    .filter((other) => other.status !== "cancelled")
+    .sort((a, b) => a.partNumber - b.partNumber);
+  const planned = getSeries(episode.seriesId)?.bible.parts.length ?? chapters.length;
+  const unapproved = chapters.filter((other) => getStep(other.id, "story").status !== "approved");
+  if (chapters.length < planned || unapproved.length > 0) return wait(episode, "voice", meta, "every chapter's script to be approved");
+  const batch = chapters.filter((other) => {
+    const step = getStep(other.id, "voice");
+    return step.status === "queued" && !step.meta.note && step.meta.attempt === 0;
+  });
+  runVoiceTask(batch, () => runStoryVoice(batch.map((other) => other.dir)));
+}
+
+function runVoiceTask(episodes: Episode[], work: () => Promise<void>): void {
+  for (const episode of episodes) {
+    localTasks.add(taskKey(episode.id, "voice"));
+    updateStep(episode.id, "voice", { status: "running", error: null, meta: { startedAt: new Date().toISOString(), waitingFor: undefined } });
+  }
+  work()
+    .then(async () => {
+      // Each chapter is listened to against its script before review.
+      for (const episode of episodes) {
+        const story = getEpisode(episode.id)?.story;
+        const flags = story
+          ? await hearScenes(episode.dir, story).catch((error) => {
+              console.error(`episode ${episode.id} voice check: ${error instanceof Error ? error.message : error}`);
+              return [];
+            })
+          : [];
+        updateStep(episode.id, "voice", { status: "review", meta: { flags } });
+      }
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof QuotaExceededError) {
+        voiceBlockedUntil = nextVoiceReset();
+        for (const episode of episodes) updateStep(episode.id, "voice", { status: "queued", error: null, meta: { waitingFor: "tomorrow's free voice requests" } });
+        return;
+      }
+      if (OFFLINE.test(message)) {
+        for (const episode of episodes) updateStep(episode.id, "voice", { status: "queued", error: "Waiting for the internet connection" });
+        return;
+      }
+      for (const episode of episodes) fail(episode.id, "voice", error);
+    })
+    .finally(() => {
+      for (const episode of episodes) localTasks.delete(taskKey(episode.id, "voice"));
+    });
 }
 
 export async function createNextEpisode(idea?: string): Promise<Episode> {
@@ -306,33 +478,44 @@ export async function createNextEpisode(idea?: string): Promise<Episode> {
       partNumber = 1;
     }
   }
-  if (!series) series = createSeries(await writeSeriesBible({ idea, parts: settings.partsPerSeries }));
+  if (!series) {
+    // Each week's story is made with that week's GPU allowance, so a new one starts only when all its chapters fit.
+    const needed = chapterGpuSeconds(settings.scenesPerPart) * settings.partsPerSeries;
+    const resetsAt = await gpuShortfall(needed);
+    if (resetsAt) {
+      throw new Error(`A new story needs about ${Math.ceil(needed / 3600)} GPU hours, more than this week has left; it can start after the allowance resets (${resetsAt}).`);
+    }
+    series = createSeries(await writeSeriesBible({ idea, parts: settings.partsPerSeries, earlier: listSeries().map((other) => other.bible) }));
+    // Every chapter is set up at once; each is written as soon as the one before it is.
+    const first = createEpisode(series.id, 1);
+    for (let part = 2; part <= series.bible.parts.length; part++) createEpisode(series.id, part);
+    return first;
+  }
   return createEpisode(series.id, partNumber);
 }
 
-async function ensureDailyEpisode(): Promise<void> {
+// After a failed attempt (usually: not enough GPU left this week), a new story is tried again this much later.
+const CREATE_RETRY_MS = 30 * 60_000;
+let lastCreateFailure = 0;
+
+// A new story starts once the last one has gone out to YouTube and nothing else is being made.
+async function ensureStory(): Promise<void> {
   const settings = getSettings();
-  if (!settings.autoCreate || creating) return;
-  const today = format(new Date(), "yyyy-MM-dd");
-  if (format(new Date(), "HH:mm") < settings.dailyTime) return;
-  const episodes = listEpisodes();
-  if (episodes.some((episode) => format(new Date(episode.createdAt), "yyyy-MM-dd") === today)) return;
-  if (episodes.filter((episode) => episode.status === "in_progress").length >= MAX_EPISODES_IN_PROGRESS) return;
+  if (!settings.autoCreate || creating || Date.now() - lastCreateFailure < CREATE_RETRY_MS) return;
+  if (listSeries().some((series) => series.status === "active")) return;
+  if (listEpisodes({ status: "in_progress" }).length > 0) return;
   creating = true;
   try {
     const episode = await createNextEpisode();
-    console.log(`created today's part: episode ${episode.id}`);
+    console.log(`started a new story: series ${episode.seriesId}`);
   } catch (error) {
-    console.error(`could not create today's part: ${error instanceof Error ? error.message : error}`);
+    lastCreateFailure = Date.now();
+    console.error(`could not start a new story: ${error instanceof Error ? error.message : error}`);
   } finally {
     creating = false;
   }
 }
 
-const MAX_DRAFT_POSTS = 4;
-const POST_RETRY_MS = 30 * 60_000;
-let drafting = false;
-let lastPostFailure = 0;
 
 const withAiNote = (text: string, hasImage: boolean) => {
   const plain = text.replace(AI_NOTE, "").trim();
@@ -353,6 +536,7 @@ async function pagePostContext() {
     }
   }
   return {
+    brandName: getSettings().brandName,
     seriesTitle: series?.bible.title,
     hashtags: series?.bible.hashtags ?? [],
     watched: watchedParts.map((episode) => ({
@@ -416,35 +600,6 @@ export async function publishPost(id: number): Promise<Post> {
   }
 }
 
-// Keeps the day's Page posts drafted. Nothing is posted until the owner publishes it.
-async function ensurePagePosts(): Promise<void> {
-  const settings = getSettings();
-  if (settings.postsPerDay === 0 || drafting || Date.now() - lastPostFailure < POST_RETRY_MS) return;
-  if (format(new Date(), "HH:mm") < settings.dailyTime) return;
-  const today = format(new Date(), "yyyy-MM-dd");
-  const posts = listPosts();
-  if (posts.filter((post) => format(new Date(post.createdAt), "yyyy-MM-dd") === today).length >= settings.postsPerDay) return;
-  if (posts.filter((post) => post.status === "draft").length >= MAX_DRAFT_POSTS) return;
-  drafting = true;
-  try {
-    const post = await draftPost();
-    console.log(`drafted Page post ${post.id} (${post.angle})`);
-    void alert({ title: "A Page post is ready to review", message: post.text.slice(0, 200), click: "veogen://posts", tags: ["memo"], priority: 2 });
-  } catch (error) {
-    lastPostFailure = Date.now();
-    console.error(`could not draft a Page post: ${error instanceof Error ? error.message : error}`);
-  } finally {
-    drafting = false;
-  }
-}
-
-// Local hours at which the Page's numbers are recorded; the last one of the day also sends the summary alert.
-const REPORT_HOURS = [2, 8, 14, 20];
-const SUMMARY_HOUR = 20;
-const REPORT_RETRY_MS = 30 * 60_000;
-let reporting = false;
-let lastReportFailure = 0;
-
 // Records the Page's numbers now. Kept so that later reports can be compared with this one.
 export async function takeReport(): Promise<Report> {
   if (!config.FACEBOOK_PAGE_ID || !config.FACEBOOK_PAGE_TOKEN) throw new Error("Facebook is not connected yet (see Settings)");
@@ -460,42 +615,15 @@ export async function takeReport(): Promise<Report> {
   return saveReport(data);
 }
 
-async function ensureReport(): Promise<void> {
-  if (!config.FACEBOOK_PAGE_ID || !config.FACEBOOK_PAGE_TOKEN || reporting || Date.now() - lastReportFailure < REPORT_RETRY_MS) return;
-  // The most recent report hour that has already passed, today or yesterday.
-  const now = new Date();
-  const due = REPORT_HOURS.map((hour) => new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour))
-    .flatMap((slot) => [slot, new Date(slot.getTime() - 24 * 3_600_000)])
-    .filter((slot) => slot <= now)
-    .sort((a, b) => b.getTime() - a.getTime())[0] as Date;
-  const latest = listReports(1)[0];
-  if (latest && new Date(latest.takenAt) >= due) return;
-  reporting = true;
-  try {
-    const report = await takeReport();
-    console.log(`report ${report.id}: ${report.page.followers} followers, ${report.reels.length} reels`);
-    if (due.getHours() === SUMMARY_HOUR) {
-      const dayBefore = reportBefore(new Date(now.getTime() - 23 * 3_600_000));
-      void alert({ title: "Today on the Page", message: summarizeReport(report, dayBefore), click: "veogen://analysis", tags: ["bar_chart"], priority: 2 });
-    }
-  } catch (error) {
-    lastReportFailure = Date.now();
-    console.error(`could not take a report: ${error instanceof Error ? error.message : error}`);
-  } finally {
-    reporting = false;
-  }
-}
-
 export async function tick(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
-    // Not awaited: reading numbers from Facebook must not hold up the parts in production.
-    void ensureReport();
-    await ensureDailyEpisode();
-    // Not awaited: writing a post must not hold up the parts in production.
-    void ensurePagePosts();
+    // This project posts to YouTube only: no Facebook Page posts or Page reports.
+    await ensureStory();
     publishScheduled();
+    // Not awaited: joining and uploading a story takes minutes and must not hold up the chapters.
+    void ensureRelease();
     for (const episode of listEpisodes({ status: "in_progress" }).reverse()) {
       await advance(episode).catch((error) => console.error(`episode ${episode.id}: ${error}`));
     }
@@ -508,16 +636,22 @@ export function approveStep(episodeId: number, name: StepName): void {
   const step = getStep(episodeId, name);
   if (step.status !== "review") throw new Error(`The ${name} step is not waiting for review`);
   updateStep(episodeId, name, { status: "approved", meta: { note: undefined, scenes: undefined } });
-  const next = STEP_NAMES[STEP_NAMES.indexOf(name) + 1];
-  if (next) updateStep(episodeId, next, { status: "queued", error: null });
+  // Each step made from this one starts once everything else it is made from is approved too.
+  for (const later of STEP_NAMES) {
+    if (!STEP_NEEDS[later].includes(name) || getStep(episodeId, later).status !== "waiting") continue;
+    if (STEP_NEEDS[later].every((need) => getStep(episodeId, need).status === "approved")) updateStep(episodeId, later, { status: "queued", error: null });
+  }
 }
 
 export type RejectOptions = { note?: string; scenes?: number[]; musicTrack?: string; musicVolume?: number; sfxVolume?: number };
 
-// Sends a step back to be redone, and resets every later step, since they were built on it.
+// Sends a step back to be redone, and resets every step built on it. Steps beside it (the voice when the
+// images are redone) are kept.
 export function rejectStep(episodeId: number, name: StepName, options: RejectOptions): void {
   const step = getStep(episodeId, name);
   if (step.status === "running" || step.status === "waiting") throw new Error(`The ${name} step cannot be redone right now`);
+  // A reason given for rejecting a script is kept, so later scripts avoid the same thing.
+  if (name === "story" && options.note) addCorrections("note", [options.note]);
   updateStep(episodeId, name, {
     status: "queued",
     error: null,
@@ -532,23 +666,23 @@ export function rejectStep(episodeId: number, name: StepName, options: RejectOpt
   });
   // A Kaggle job already running for a later step is NOT stopped by this: Kaggle's API gives no way to
   // find the running session, so the owner has to stop it on Kaggle.
-  for (const later of STEP_NAMES.slice(STEP_NAMES.indexOf(name) + 1)) {
-    updateStep(episodeId, later, { status: "waiting", error: null, meta: { scenes: undefined, note: undefined, scheduledFor: undefined } });
+  for (const later of stepsBuiltOn(name)) {
+    updateStep(episodeId, later, { status: "waiting", error: null, meta: { scenes: undefined, note: undefined, scheduledFor: undefined, waitingFor: undefined } });
   }
 }
 
-async function musicTrack(episode: Episode): Promise<string> {
-  const musicFile = Bun.file(`${episode.dir}/music.txt`);
-  return (await musicFile.exists()) ? (await musicFile.text()).replace(/\.[^.]+$/, "") : "";
+// Bedtime stories get calm music.
+export function musicMood(episode: Episode): MusicMood {
+  return getSeries(episode.seriesId)?.bible.storyType === "bedtime" ? "calm" : "cheerful";
 }
 
-// Sends viewers to YouTube for the whole story: to the joined video once it is up, to the channel until then.
+// Sends viewers of a chapter to the whole story. Links in Shorts descriptions cannot be clicked, so the
+// words matter more than the link.
 function fullStoryLine(series: Series | null): string {
-  if (series?.fullStoryUrl) return `الحكاية كاملة على يوتيوب: ${series.fullStoryUrl}`;
-  const channel = getSettings().youtubeUrl;
-  return channel ? `الحكاية كاملة هتنزل على يوتيوب: ${channel}` : "";
+  return series?.fullStoryUrl ? `الحكاية كاملة على القناة 👈 ${series.fullStoryUrl}` : "الحكاية كاملة على القناة 👈";
 }
 
+// The description of a chapter's Short.
 export async function buildDescription(episode: Episode): Promise<string> {
   const story = episode.story;
   if (!story) return "";
@@ -556,12 +690,10 @@ export async function buildDescription(episode: Episode): Promise<string> {
   return [
     story.title,
     story.description,
-    FOLLOW_LINE,
     fullStoryLine(getSeries(episode.seriesId)),
-    story.hashtags.join(" "),
-    "هذا المحتوى مصنوع بالذكاء الاصطناعي.",
-    track ? `Music: "${track}" ${MUSIC_CREDIT}` : "",
-    ...new Set(story.scenes.map((scene) => SFX_CREDITS[scene.sfx ?? ""]).filter((credit): credit is string => Boolean(credit))),
+    followLine(),
+    [...story.hashtags, "#shorts"].join(" "),
+    ...musicCredit(track ? [track] : []),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -580,18 +712,24 @@ async function youtubeAccessToken(): Promise<string> {
 }
 
 // Uploads a finished video to the connected YouTube channel. A vertical video under three minutes becomes a Short.
-async function uploadToYoutube(video: { path: string; title: string; description: string; hashtags: string[] }) {
+// With `publishAt` it stays private until then, and YouTube makes it public by itself.
+async function uploadToYoutube(video: { path: string; title: string; description: string; hashtags: string[]; publishAt?: string }) {
   const uploaded = await uploadVideo({
     accessToken: await youtubeAccessToken(),
     videoPath: video.path,
     title: video.title,
     description: video.description,
     tags: video.hashtags.map((tag) => tag.replace(/^#/, "").replace(/_/g, " ")).filter(Boolean),
+    publishAt: video.publishAt,
   });
   return {
+    videoId: uploaded.videoId,
     url: uploaded.url,
     // YouTube can hold uploads from an app it has not reviewed as private, whatever was asked for.
-    detail: uploaded.privacy === "public" ? undefined : `YouTube saved it as ${uploaded.privacy}. Open it in YouTube Studio to make it public.`,
+    detail:
+      uploaded.privacy === "public" || video.publishAt
+        ? undefined
+        : `YouTube saved it as ${uploaded.privacy}. Open it in YouTube Studio to make it public.`,
   };
 }
 
@@ -608,7 +746,7 @@ export async function uploadEpisodeToYoutube(episodeId: number): Promise<void> {
   youtubeUploads.add(episodeId);
   try {
     const uploaded = await uploadToYoutube({
-      path: paths.final(episode.dir, MODEL),
+      path: await shortVideo(episode),
       title: episode.story?.title ?? "",
       description: await buildDescription(episode),
       hashtags: episode.story?.hashtags ?? [],
@@ -621,22 +759,37 @@ export async function uploadEpisodeToYoutube(episodeId: number): Promise<void> {
 
 export const fullStoryPaths = (seriesId: number) => {
   const dir = `${OUTPUT_DIR}/series/s${seriesId}`;
-  return { video: `${dir}/full-story.mp4`, parts: `${dir}/full-story.json` };
+  return { video: `${dir}/full-story.mp4`, parts: `${dir}/full-story.json`, thumbnail: `${dir}/thumbnail.jpg`, release: `${dir}/release.json` };
 };
+
+// The vertical Short of a chapter, made from its wide video the first time it is needed.
+async function shortVideo(episode: Episode): Promise<string> {
+  const wide = paths.final(episode.dir, MODEL);
+  const short = `${episode.dir}/short-${MODEL}.mp4`;
+  const made = Bun.file(short);
+  if (!(await made.exists()) || made.lastModified < Bun.file(wide).lastModified) await runShort(wide, short);
+  return short;
+}
 
 const fullStoryBuilds = new Set<number>();
 export const fullStoryBuilding = (seriesId: number) => fullStoryBuilds.has(seriesId);
 
-// The published parts of a series that have a finished video, in story order.
-function publishedParts(seriesId: number): Episode[] {
-  return listEpisodes({ seriesId, status: "published" }).sort((a, b) => a.partNumber - b.partNumber);
+// The chapters of a series whose video is finished (approved) or already out, in story order.
+function finishedParts(seriesId: number): Episode[] {
+  return listEpisodes({ seriesId })
+    .filter((episode) => episode.status === "published" || (episode.status === "in_progress" && ["review", "approved"].includes(getStep(episode.id, "publish").status)))
+    .sort((a, b) => a.partNumber - b.partNumber);
 }
 
-// Joins every published part of a series into one video for YouTube. Returns the part numbers it holds.
+const imagePath = (episode: Episode, scene: number) => `${paths.renderDir(episode.dir, MODEL)}/images/scene-${String(scene).padStart(2, "0")}.png`;
+
+// Joins every finished chapter of a series into one video, opened and closed once with a title card.
+// Returns the chapter numbers it holds.
 export async function buildFullStory(seriesId: number): Promise<number[]> {
   if (fullStoryBuilds.has(seriesId)) throw new Error("The full story is already being put together");
-  const parts = publishedParts(seriesId);
-  if (parts.length < 2) throw new Error("The full story needs at least two published parts");
+  const series = getSeries(seriesId);
+  const parts = finishedParts(seriesId);
+  if (!series || parts.length < 2) throw new Error("The full story needs at least two finished chapters");
   const videos = parts.map((episode) => paths.final(episode.dir, MODEL));
   for (const [index, file] of videos.entries()) {
     if (!(await Bun.file(file).exists())) throw new Error(`Part ${parts[index]?.partNumber} has no finished video on the server`);
@@ -644,7 +797,23 @@ export async function buildFullStory(seriesId: number): Promise<number[]> {
   const target = fullStoryPaths(seriesId);
   fullStoryBuilds.add(seriesId);
   try {
-    await runFullStory(videos, target.video);
+    const first = parts[0] as Episode;
+    const last = parts.at(-1) as Episode;
+    const brand = getSettings().brandName;
+    await runFullStory(videos, target.video, {
+      intro: {
+        image: imagePath(first, 1),
+        lines: [...(brand ? [{ text: brand, size: 72 }] : []), { text: series.bible.title, size: 120, gold: true }],
+      },
+      outro: {
+        image: imagePath(last, last.story?.scenes.length ?? 1),
+        lines: [
+          { text: "وتوتة توتة فرغت الحدوتة", size: 116, gold: true },
+          { text: "حلوة ولا ملتوتة؟", size: 84 },
+          { text: "الحكاية الجاية الأسبوع الجاي", size: 72 },
+        ],
+      },
+    });
     const numbers = parts.map((episode) => episode.partNumber);
     await Bun.write(target.parts, JSON.stringify({ parts: numbers, builtAt: new Date().toISOString() }));
     return numbers;
@@ -666,24 +835,126 @@ export async function uploadFullStory(seriesId: number): Promise<string> {
   return uploaded.url;
 }
 
+// What has gone out of a story so far, kept so a release cut off halfway carries on where it stopped.
+type Release = { publishAt: string; playlistId?: string; videoId?: string; thumbnail?: "set" | string };
+
+let releasing = false;
+let lastReleaseFailure = 0;
+const RELEASE_RETRY_MS = 60 * 60_000;
+
+// Once every chapter of a story is finished, the whole story goes to YouTube: the joined film, scheduled a
+// day ahead so the owner can still stop it, then one chapter a day as a Short after it.
+async function ensureRelease(): Promise<void> {
+  if (releasing || !youtubeConnected || Date.now() - lastReleaseFailure < RELEASE_RETRY_MS) return;
+  for (const series of listSeries().filter((candidate) => candidate.status === "active")) {
+    const chapters = listEpisodes({ seriesId: series.id }).filter((episode) => episode.status !== "cancelled");
+    if (chapters.length < series.bible.parts.length) continue;
+    if (finishedParts(series.id).length < chapters.length) continue;
+    releasing = true;
+    try {
+      await releaseStory(series);
+    } catch (error) {
+      lastReleaseFailure = Date.now();
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`release of series ${series.id}: ${message}`);
+      void alert({ title: `${series.bible.title} did not go out`, message: message.slice(0, 300), click: "veogen://series", tags: ["warning"], priority: 4 });
+    } finally {
+      releasing = false;
+    }
+    return;
+  }
+}
+
+async function releaseStory(series: Series): Promise<void> {
+  const target = fullStoryPaths(series.id);
+  const saved = Bun.file(target.release);
+  const [hours, minutes] = getSettings().publishTime.split(":").map(Number) as [number, number];
+  let release: Release = (await saved.exists())
+    ? ((await saved.json()) as Release)
+    : // The film goes public at the posting time at least a day from now: the owner's window to stop it.
+      { publishAt: (() => {
+          let at = set(addHours(new Date(), 24), { hours, minutes, seconds: 0, milliseconds: 0 });
+          if (at < addHours(new Date(), 24)) at = addDays(at, 1);
+          return at.toISOString();
+        })() };
+  const keep = async (next: Release) => {
+    release = next;
+    await Bun.write(target.release, JSON.stringify(release, null, 2));
+  };
+  const token = await youtubeAccessToken();
+  const chapters = finishedParts(series.id);
+
+  if (!release.playlistId) {
+    const playlistId = await createPlaylist({ accessToken: token, title: series.bible.title, description: chapters[0]?.story?.description ?? "" });
+    await keep({ ...release, playlistId });
+  }
+  if (!release.videoId) {
+    if (!(await Bun.file(target.video).exists())) await buildFullStory(series.id);
+    const text = await fullStoryText(series);
+    const uploaded = await uploadToYoutube({ path: target.video, title: text.title, description: text.description, hashtags: series.bible.hashtags, publishAt: release.publishAt });
+    setSeriesFullStoryUrl(series.id, uploaded.url);
+    await keep({ ...release, videoId: uploaded.videoId });
+    await addToPlaylist({ accessToken: token, playlistId: release.playlistId as string, videoId: uploaded.videoId, position: 0 });
+  }
+  if (!release.thumbnail) {
+    // A channel that is not phone-verified cannot set thumbnails; the film still goes out, with YouTube's own pick.
+    try {
+      const images = chapters.flatMap((episode) =>
+        (episode.story?.scenes ?? []).flatMap((scene, index) => (scene.shows?.includes("Hero") ? [imagePath(episode, index + 1)] : [])),
+      );
+      await runThumbnail(images.filter((_, index) => index % 4 === 0), series.bible.title, target.thumbnail);
+      await setThumbnail({ accessToken: token, videoId: release.videoId as string, imagePath: target.thumbnail });
+      await keep({ ...release, thumbnail: "set" });
+    } catch (error) {
+      await keep({ ...release, thumbnail: (error instanceof Error ? error.message : String(error)).slice(0, 300) });
+    }
+  }
+
+  // One chapter a day after the film, at the posting time.
+  const shorts: string[] = [];
+  for (const [index, episode] of chapters.entries()) {
+    const done = getStep(episode.id, "publish").meta.published?.youtube;
+    if (episode.status === "published" && done?.url) {
+      shorts.push(done.url);
+      continue;
+    }
+    const publishAt = addDays(new Date(release.publishAt), index + 1).toISOString();
+    const uploaded = await uploadToYoutube({
+      path: await shortVideo(episode),
+      title: `${episode.story?.title ?? series.bible.title} #shorts`,
+      description: await buildDescription(getEpisode(episode.id) as Episode),
+      hashtags: episode.story?.hashtags ?? [],
+      publishAt,
+    });
+    await addToPlaylist({ accessToken: token, playlistId: release.playlistId as string, videoId: uploaded.videoId }).catch((error) =>
+      console.error(`playlist: ${error instanceof Error ? error.message : error}`),
+    );
+    updateStep(episode.id, "publish", {
+      status: "approved",
+      error: null,
+      meta: { waitingFor: undefined, published: { youtube: { status: "posted", url: uploaded.url, detail: `Public on ${format(new Date(publishAt), "EEE d MMM HH:mm")}` } } },
+    });
+    setEpisodeStatus(episode.id, "published");
+    shorts.push(uploaded.url);
+  }
+  setSeriesStatus(series.id, "finished");
+  const goesPublic = format(new Date(release.publishAt), "EEE d MMM 'at' HH:mm");
+  void alert({
+    title: `${series.bible.title} is on YouTube`,
+    message: `The full story goes public ${goesPublic}, then a chapter a day as a Short. To stop it, delete it in YouTube Studio before then. ${getSeries(series.id)?.fullStoryUrl ?? ""}${release.thumbnail === "set" ? "" : " (No custom thumbnail: verify the channel by phone to allow one.)"}`,
+    click: getSeries(series.id)?.fullStoryUrl ?? "veogen://series",
+    tags: ["tada"],
+    priority: 4,
+  });
+}
+
 // Title and description for the joined video.
 export async function fullStoryText(series: Series): Promise<{ title: string; description: string }> {
-  const parts = publishedParts(series.id);
-  const tracks = new Set((await Promise.all(parts.map(musicTrack))).filter(Boolean));
-  const effects = new Set(
-    parts.flatMap((episode) => (episode.story?.scenes ?? []).map((scene) => SFX_CREDITS[scene.sfx ?? ""])).filter((credit): credit is string => Boolean(credit)),
-  );
+  const parts = finishedParts(series.id);
+  const tracks = [...new Set((await Promise.all(parts.map(musicTrack))).filter(Boolean))];
   return {
     title: `${series.bible.title} | الحكاية كاملة`,
-    description: [
-      `${series.bible.title} | الحكاية كاملة`,
-      parts[0]?.story?.description ?? "",
-      FOLLOW_LINE,
-      series.bible.hashtags.join(" "),
-      "هذا المحتوى مصنوع بالذكاء الاصطناعي.",
-      ...[...tracks].map((track) => `Music: "${track}" ${MUSIC_CREDIT}`),
-      ...effects,
-    ]
+    description: [`${series.bible.title} | الحكاية كاملة`, parts[0]?.story?.description ?? "", followLine(), series.bible.hashtags.join(" "), ...musicCredit(tracks)]
       .filter(Boolean)
       .join("\n\n"),
   };
@@ -755,53 +1026,22 @@ export async function publishEpisode(episodeId: number): Promise<void> {
   }
 }
 
-async function sendOut(episode: Episode, description: string, videoPath: string, published: NonNullable<StepMeta["published"]>): Promise<void> {
+// Posts one chapter now, as a Short. Used when the owner posts a chapter by hand; a whole story normally
+// goes out through ensureRelease.
+async function sendOut(episode: Episode, description: string, _videoPath: string, published: NonNullable<StepMeta["published"]>): Promise<void> {
   const episodeId = episode.id;
   updateStep(episodeId, "publish", { status: "running", error: null, meta: { scheduledFor: undefined } });
-  if (config.FACEBOOK_PAGE_ID && config.FACEBOOK_PAGE_TOKEN) {
-    try {
-      const reel = await publishReel({
-        pageId: config.FACEBOOK_PAGE_ID,
-        pageToken: config.FACEBOOK_PAGE_TOKEN,
-        videoPath,
-        description,
-      });
-      published.facebook = { status: "posted", url: reel.url };
-    } catch (error) {
-      published.facebook = { status: "failed", detail: error instanceof Error ? error.message : String(error) };
-    }
-  } else {
-    published.facebook = { status: "manual", detail: "Facebook is not connected yet (see Settings)." };
-  }
-  // TikTok keeps uploads from unreviewed apps private, so it is posted by hand.
-  published.tiktok = { status: "manual", url: "https://www.tiktok.com/tiktokstudio/upload" };
-  const manualYoutube = { status: "manual", url: "https://www.youtube.com/upload" };
-  // A part that already reached YouTube on an earlier try is not uploaded twice.
-  const earlier = getStep(episodeId, "publish").meta.published?.youtube;
-  published.youtube = earlier?.status === "posted" ? earlier : manualYoutube;
-
-  if (published.facebook.status === "failed") {
-    updateStep(episodeId, "publish", { status: "review", error: published.facebook.detail ?? null, meta: { published } });
+  if (!youtubeConnected) {
+    updateStep(episodeId, "publish", { status: "review", error: "YouTube is not connected yet (see Settings)." });
     return;
   }
-  // YouTube goes after Facebook has succeeded, so a failed Facebook post never leaves a lone upload behind.
-  if (youtubeConnected && published.youtube.status !== "posted") {
-    try {
-      const uploaded = await uploadToYoutube({ path: videoPath, title: episode.story?.title ?? "", description, hashtags: episode.story?.hashtags ?? [] });
-      published.youtube = { status: "posted", ...uploaded };
-    } catch (error) {
-      // The part is out on Facebook; YouTube can still be done by hand from the same screen.
-      published.youtube = { ...manualYoutube, detail: `The automatic upload failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500) };
-    }
+  try {
+    const uploaded = await uploadToYoutube({ path: await shortVideo(episode), title: episode.story?.title ?? "", description, hashtags: episode.story?.hashtags ?? [] });
+    published.youtube = { status: "posted", url: uploaded.url, ...(uploaded.detail ? { detail: uploaded.detail } : {}) };
+  } catch (error) {
+    updateStep(episodeId, "publish", { status: "review", error: (error instanceof Error ? error.message : String(error)).slice(0, 1000) });
+    return;
   }
   updateStep(episodeId, "publish", { status: "approved", meta: { published } });
   setEpisodeStatus(episodeId, "published");
-  const series = getSeries(episode.seriesId);
-  if (series && episode.partNumber >= series.bible.parts.length) {
-    setSeriesStatus(series.id, "finished");
-    // The last part is out, so the whole story can be joined for YouTube without being asked.
-    void buildFullStory(series.id)
-      .then(() => alert({ title: "The full story is ready", message: `${series.bible.title}: every part joined into one video for YouTube.`, click: "veogen://series", tags: ["film_projector"] }))
-      .catch((error) => console.error(`full story of series ${series.id}: ${error instanceof Error ? error.message : error}`));
-  }
 }

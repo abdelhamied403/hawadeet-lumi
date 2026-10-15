@@ -148,13 +148,13 @@ export function SeriesPlanEditor({ series, onDone }: { series: SeriesDetail; onD
                 render={({ field }) => (
                   <View className="gap-1.5">
                     <Field
-                      label={isLast ? "Final note it ends on" : "Cliffhanger it ends on"}
+                      label={isLast ? "Happy ending it closes on" : "What it ends on"}
                       multiline
                       className="min-h-24"
                       value={field.value}
                       onChangeText={field.onChange}
                       onBlur={field.onBlur}
-                      accessibilityLabel={`Part ${number}: ${isLast ? "final note" : "cliffhanger"}`}
+                      accessibilityLabel={`Part ${number}: ${isLast ? "happy ending" : "what it ends on"}`}
                     />
                     <FieldError message={errors.parts?.[index]?.cliffhanger?.message} />
                   </View>

@@ -11,6 +11,11 @@ const COST: Record<StepName, { start: number; perScene: number }> = {
   publish: { start: 0, perScene: 0 },
 };
 
+// Kaggle GPU time one chapter of this many scenes uses: its images job and its clips job.
+export function chapterGpuSeconds(scenes: number): number {
+  return COST.images.start + COST.images.perScene * scenes + COST.clips.start + COST.clips.perScene * scenes;
+}
+
 export type StepEstimate = {
   // How long the step's work takes; null when it has none left (done, waiting for the owner, or failed).
   estimateSeconds: number | null;

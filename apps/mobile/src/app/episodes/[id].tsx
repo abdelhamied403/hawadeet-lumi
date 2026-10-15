@@ -21,9 +21,9 @@ import { slotLabel, STEP_COPY } from "@/lib/steps";
 import { getEpisode, type EpisodeDetail, type Step, type StepName } from "@/services/veogen";
 
 const NOTE_HINTS: Record<Exclude<StepName, "publish">, string> = {
-  story: "For example: make the ending scarier, or the hook is too slow",
-  voice: "For example: slower, more whispering at the end",
-  images: "For example: darker, and he should be facing the door",
+  story: "For example: make it funnier, or use simpler words",
+  voice: "For example: slower, and happier at the end",
+  images: "For example: brighter colours, and she should be smiling",
   clips: "For example: less camera movement",
   video: "Change the music above, or describe what is wrong",
 };

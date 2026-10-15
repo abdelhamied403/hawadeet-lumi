@@ -117,8 +117,14 @@ export type GenerateJsonPayload = {
 };
 
 type GenerateTextResponse = {
-  candidates?: { content?: { parts?: { text?: string }[] } }[];
+  candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[];
 };
+
+// Everything written is for small children, so Google's own filters are switched on as a safety net
+// behind the prompts' rules.
+const SAFETY_SETTINGS = ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"].map(
+  (category) => ({ category, threshold: "BLOCK_MEDIUM_AND_ABOVE" }),
+);
 
 // Returns the model's reply parsed as JSON; the caller validates its shape.
 // Overload and quota errors are thrown as typed errors so the caller can move to another model.
@@ -135,10 +141,14 @@ export async function generateJson(payload: GenerateJsonPayload): Promise<unknow
     ],
     // Listening tasks should be repeatable; writing tasks should be varied.
     generationConfig: { responseMimeType: "application/json", temperature: payload.audio ? 0 : payload.images?.length ? 0.6 : 1 },
+    safetySettings: SAFETY_SETTINGS,
   };
   try {
     const { data } = await geminiHttp.post<GenerateTextResponse>(`/models/${payload.model}:generateContent`, body);
-    const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+    const candidate = data.candidates?.[0];
+    // A blocked reply is a slip of that one reply, like broken JSON, so the caller asks again.
+    if (candidate?.finishReason === "SAFETY") throw new SyntaxError("The reply was blocked by the safety filter");
+    const text = candidate?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
     if (!text) throw new Error(`The story service returned no text: ${JSON.stringify(data).slice(0, 300)}`);
     return JSON.parse(text);
   } catch (error) {

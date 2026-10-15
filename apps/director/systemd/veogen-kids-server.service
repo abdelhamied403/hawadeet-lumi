@@ -1,0 +1,19 @@
+# The kids' Veogen server, as it runs on the Oracle machine (a system service, so it starts on boot with
+# nobody logged in). Port 4527, reachable only through the laptop's SSH tunnel (veogen-tunnel.service).
+# Install on the server:
+#   sudo cp veogen-kids-server.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#   sudo systemctl enable --now veogen-kids-server
+[Unit]
+Description=Veogen kids server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/veogen-kids/apps/server
+ExecStart=/home/ubuntu/.bun/bin/bun run src/server/index.ts
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

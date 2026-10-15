@@ -38,6 +38,12 @@ db.exec(`
     PRIMARY KEY (episode_id, name)
   );
   CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS posts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     angle TEXT NOT NULL,
@@ -64,7 +70,27 @@ if (!seriesColumns.includes("full_story_url")) db.exec("ALTER TABLE series ADD C
 export const STEP_NAMES = ["story", "voice", "images", "clips", "video", "publish"] as const;
 export type StepName = (typeof STEP_NAMES)[number];
 
-// waiting: an earlier step is not approved yet. queued: ready to run. review: waiting for the owner.
+// What each step is made from: it is queued once all of these are approved. The voice and the images
+// both come from the script alone, so they are made at the same time.
+export const STEP_NEEDS: Record<StepName, StepName[]> = {
+  story: [],
+  voice: ["story"],
+  images: ["story"],
+  clips: ["voice", "images"],
+  video: ["clips"],
+  publish: ["video"],
+};
+
+// Every step built on this one, directly or through another step, in step order.
+export function stepsBuiltOn(name: StepName): StepName[] {
+  const built = new Set<StepName>();
+  for (const step of STEP_NAMES) {
+    if (STEP_NEEDS[step].some((need) => need === name || built.has(need))) built.add(step);
+  }
+  return [...built];
+}
+
+// waiting: a step it is made from is not approved yet. queued: ready to run. review: waiting for the owner.
 export const STEP_STATUSES = ["waiting", "queued", "running", "review", "approved", "failed"] as const;
 export type StepStatus = (typeof STEP_STATUSES)[number];
 
@@ -81,6 +107,10 @@ export const stepMetaSchema = z.object({
   // When the publish step posts by itself (ISO time); absent while it waits for the owner.
   scheduledFor: z.string().optional(),
   startedAt: z.string().optional(),
+  // Set while a GPU job waits for the weekly Kaggle allowance to reset: when it resets (ISO time).
+  waitingForGpu: z.string().optional(),
+  // Why a queued step has not started yet, in plain words (another chapter, the day's voice requests).
+  waitingFor: z.string().optional(),
   musicTrack: z.string().optional(),
   musicVolume: z.number().optional(),
   sfxVolume: z.number().optional(),
@@ -111,7 +141,7 @@ export type Episode = {
 };
 
 // What a Page post is trying to do; rotated so the Page does not repeat itself.
-export const POST_ANGLES = ["question", "teaser", "moment", "confession"] as const;
+export const POST_ANGLES = ["question", "teaser", "moment", "parents"] as const;
 export type PostAngle = (typeof POST_ANGLES)[number];
 
 export type Post = {
@@ -137,11 +167,14 @@ export const settingsSchema = z.object({
   // Local time (HH:mm) at which a scheduled part is posted.
   publishTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).default("22:00"),
   scenesPerPart: z.number().int().min(4).max(24).default(16),
-  partsPerSeries: z.number().int().min(2).max(12).default(6),
+  // Five chapters of 16 scenes use about 25 of the 30 weekly Kaggle GPU hours, leaving room for redos.
+  partsPerSeries: z.number().int().min(2).max(12).default(5),
   // Page posts drafted each day between videos; 0 turns them off.
   postsPerDay: z.number().int().min(0).max(3).default(1),
   // The YouTube channel viewers are sent to for the whole story; empty leaves that line out of descriptions.
   youtubeUrl: z.union([z.literal(""), z.url()]).default(""),
+  // The Page and channel name, used in descriptions and Page posts; empty leaves it out until one is chosen.
+  brandName: z.string().trim().max(40).default(""),
   // Send phone alerts (needs NTFY_TOPIC in .env).
   notifications: z.boolean().default(true),
 });
@@ -310,7 +343,8 @@ type PostRow = {
 function toPost(row: PostRow): Post {
   return {
     id: row.id,
-    angle: row.angle as PostAngle,
+    // "confession" was the stand-alone angle of the horror Page; "parents" took its place.
+    angle: (row.angle === "confession" ? "parents" : row.angle) as PostAngle,
     text: row.text,
     imagePath: row.image_path,
     withImage: row.with_image === 1,
@@ -378,4 +412,26 @@ export function listReports(limit = 200): Report[] {
 export function reportBefore(moment: Date): Report | null {
   const row = db.query<ReportRow, [string]>("SELECT * FROM reports WHERE taken_at <= ? ORDER BY id DESC LIMIT 1").get(moment.toISOString());
   return row ? toReport(row) : null;
+}
+
+// What the owner fixed in scripts: "edit" is a line changed by hand ("before" → "after"), "note" a reason
+// given when a script was rejected. Every later script is written and proofread with the newest of them.
+export type CorrectionKind = "edit" | "note";
+
+// Only the newest are passed on, to keep the writer's prompt short.
+const CORRECTIONS_KEPT: Record<CorrectionKind, number> = { edit: 40, note: 10 };
+
+export function addCorrections(kind: CorrectionKind, texts: string[]): void {
+  const statement = db.query("INSERT INTO corrections (kind, text, created_at) VALUES (?, ?, ?)");
+  for (const text of texts) statement.run(kind, text, now());
+}
+
+export function listCorrections(): string[] {
+  const newest = (kind: CorrectionKind) =>
+    db
+      .query<{ text: string }, [string, number]>("SELECT text FROM corrections WHERE kind = ? ORDER BY id DESC LIMIT ?")
+      .all(kind, CORRECTIONS_KEPT[kind])
+      .map((row) => row.text)
+      .reverse();
+  return [...newest("edit").map((text) => `Line fixed by hand: ${text}`), ...newest("note").map((text) => `Rejected a script with this note: ${text}`)];
 }

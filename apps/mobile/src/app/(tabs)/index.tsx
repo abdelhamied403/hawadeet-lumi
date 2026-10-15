@@ -148,7 +148,7 @@ function NewPart({ hasActiveSeries, nextLabel }: { hasActiveSeries: boolean; nex
                 multiline
                 numberOfLines={3}
                 className="min-h-24"
-                placeholder="For example: a night-shift pharmacist notices the same customer buying the same medicine every night, for someone who died years ago"
+                placeholder="For example: a little girl and her cat learn to share their toys with the new neighbour"
               />
               <FieldError message={form.formState.errors.idea?.message} />
             </View>

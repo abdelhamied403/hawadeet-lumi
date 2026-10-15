@@ -1,0 +1,16 @@
+# Brings the kids' Veogen server on the Oracle machine to this laptop's port 4527, so the director (and
+# the web app) talk to it as if it ran here. The server's port stays closed to the internet.
+# Needs a Host "oracle" in ~/.ssh/config.
+# Install:  cp systemd/veogen-tunnel.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#           systemctl --user enable --now veogen-tunnel
+[Unit]
+Description=SSH tunnel to the Veogen kids server on Oracle
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 127.0.0.1:4527:127.0.0.1:4527 oracle
+Restart=always
+RestartSec=20
+
+[Install]
+WantedBy=default.target

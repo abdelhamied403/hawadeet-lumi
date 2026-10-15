@@ -1,0 +1,19 @@
+{
+  "name": "veogen-director",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "director": "bun run src/main.ts",
+    "dry-run": "bun run src/main.ts --dry-run --once",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "axios": "^1.20.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  }
+}

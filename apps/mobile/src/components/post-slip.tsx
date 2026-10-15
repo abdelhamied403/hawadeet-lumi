@@ -15,9 +15,9 @@ import type { PagePost, PostAngle } from "@/services/veogen";
 
 export const ANGLE_COPY: Record<PostAngle, string> = {
   question: "A question about the story",
-  teaser: "Teaser for the next part",
+  teaser: "Teaser for the next chapter",
   moment: "A moment they already saw",
-  confession: "Asks for their own stories",
+  parents: "A tip for parents",
 };
 
 // Same limits as the server.
@@ -109,7 +109,7 @@ export function PostSlip({ post, canPublish }: { post: PagePost; canPublish: boo
                 value={field.value}
                 onChangeText={field.onChange}
                 onBlur={field.onBlur}
-                placeholder="For example: shorter, and end on a dare"
+                placeholder="For example: shorter, and end with a question for the kids"
                 className="min-h-16"
               />
             )}

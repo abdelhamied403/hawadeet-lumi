@@ -124,7 +124,7 @@ function NewPart({ hasActiveSeries, nextLabel }: { hasActiveSeries: boolean; nex
               id="idea"
               dir="auto"
               rows={3}
-              placeholder="For example: a night-shift pharmacist notices the same customer buying the same medicine every night, for someone who died years ago"
+              placeholder="For example: a little girl and her cat learn to share their toys with the new neighbour"
               {...form.register("idea")}
             />
             {form.formState.errors.idea && <p className="text-xs text-destructive">{form.formState.errors.idea.message}</p>}

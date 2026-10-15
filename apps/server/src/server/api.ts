@@ -5,7 +5,6 @@ import { z } from "zod";
 import { config } from "../config";
 import { paths, saveStory, sceneName } from "../lib/project";
 import { storySchema } from "../schemas/story";
-import { getGpuQuota } from "../services/kaggle";
 import { listMusic } from "../stages/assemble";
 import { SFX } from "../stages/sfx";
 import { seriesBibleSchema } from "../stages/series";
@@ -13,14 +12,17 @@ import { authEnabled, login, loginSchema, logout, mediaToken, requireMediaAccess
 import { estimateStep } from "./estimates";
 import { totalPlays, youtubeViews } from "../stages/analytics";
 import { AI_NOTE, POST_TEXT_MAX } from "../stages/posts";
-import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, fullStoryBuilding, fullStoryPaths, fullStoryText, uploadFullStory, youtubeConnected, createNextEpisode, draftPost, MODEL, nextPublishSlot, publishEpisode, publishPost, rejectStep, rewritePost, scheduleEpisode, takeReport, tick, unscheduleEpisode, uploadEpisodeToYoutube } from "./engine";
+import { buildPacket } from "./packets";
+import { alert, alertsConfigured, approveStep, buildDescription, buildFullStory, cachedGpuQuota, musicMood, fullStoryBuilding, fullStoryPaths, fullStoryText, uploadFullStory, youtubeConnected, createNextEpisode, draftPost, MODEL, nextPublishSlot, publishEpisode, publishPost, rejectStep, rewritePost, scheduleEpisode, takeReport, tick, unscheduleEpisode, uploadEpisodeToYoutube } from "./engine";
 import {
   getEpisode,
   getPost,
   getSeries,
   getSettings,
+  addCorrections,
   getStep,
   getSteps,
+  updateStep,
   listEpisodes,
   listPosts,
   listReports,
@@ -44,7 +46,7 @@ import {
 
 const stepNameSchema = z.enum(STEP_NAMES);
 const rejectSchema = z.object({
-  note: z.string().trim().max(1000).optional(),
+  note: z.string().trim().max(4000).optional(),
   scenes: z.array(z.number().int().positive()).optional(),
   musicTrack: z.string().optional(),
   musicVolume: z.number().min(0).max(1).optional(),
@@ -79,7 +81,7 @@ function summarize(episode: Episode) {
     seriesTitle: series?.bible.title ?? "",
     partNumber: episode.partNumber,
     totalParts: series?.bible.parts.length ?? 0,
-    title: episode.story?.title ?? `${series?.bible.title ?? ""} | الجزء ${episode.partNumber}`,
+    title: episode.story?.title ?? `${series?.bible.title ?? ""} | الحلقة ${episode.partNumber}`,
     status: episode.status,
     createdAt: episode.createdAt,
     publishedAt: episode.publishedAt,
@@ -90,7 +92,7 @@ function summarize(episode: Episode) {
 
 async function detail(episode: Episode) {
   const scenes = [];
-  const flagged = (step: "images" | "clips", number: number) => getStep(episode.id, step).meta.flags?.find((flag) => flag.scene === number)?.problem ?? null;
+  const flagged = (step: "story" | "images" | "clips", number: number) => getStep(episode.id, step).meta.flags?.find((flag) => flag.scene === number)?.problem ?? null;
   for (const [index, scene] of (episode.story?.scenes ?? []).entries()) {
     const number = index + 1;
     const voiceFile = Bun.file(paths.voiceTimings(episode.dir, number));
@@ -105,12 +107,16 @@ async function detail(episode: Episode) {
       // What the automatic check found wrong with the scene's image or clip, if anything.
       imageProblem: flagged("images", number),
       clipProblem: flagged("clips", number),
+      // What the proofreader thinks the owner should look at in the scene's lines.
+      lineProblem: flagged("story", number),
     });
   }
   const series = getSeries(episode.seriesId);
   return {
     ...summarize(episode),
     story: episode.story,
+    // The proofreader's remarks about the whole script, such as it not having run.
+    scriptWarnings: (getStep(episode.id, "story").meta.flags ?? []).filter((flag) => flag.scene === 0).map((flag) => flag.problem),
     plan: series?.bible.parts.find((part) => part.number === episode.partNumber) ?? null,
     steps: timedSteps(episode),
     scenes,
@@ -121,7 +127,7 @@ async function detail(episode: Episode) {
     publishSlot: nextPublishSlot(episode.id).toISOString(),
     // Whether the server can upload this part to YouTube itself.
     youtubeConnected,
-    musicTracks: await listMusic(),
+    musicTracks: await listMusic(musicMood(episode)),
     soundEffects: SFX,
   };
 }
@@ -143,7 +149,7 @@ class HttpError extends Error {
 
 export const app = new Hono();
 
-app.use("*", cors({ origin: [config.WEB_ORIGIN, "http://127.0.0.1:4518"], credentials: true }));
+app.use("*", cors({ origin: [config.WEB_ORIGIN, "http://127.0.0.1:4528"], credentials: true }));
 
 app.onError((error, context) => {
   if (error instanceof HttpError) return context.json({ error: error.message }, error.status);
@@ -173,17 +179,6 @@ app.use("/media/*", requireMediaAccess);
 
 app.get("/api/auth/media-token", async (context) => context.json({ token: authEnabled ? await mediaToken() : null }));
 
-// Kaggle is asked for the GPU allowance at most every few minutes, however often the widget polls.
-const QUOTA_TTL_MS = 5 * 60_000;
-let quotaCache: { at: number; value: Awaited<ReturnType<typeof getGpuQuota>> | null } = { at: 0, value: null };
-
-async function cachedQuota() {
-  if (Date.now() - quotaCache.at > QUOTA_TTL_MS) {
-    quotaCache = { at: Date.now(), value: await getGpuQuota().catch(() => quotaCache.value) };
-  }
-  return quotaCache.value;
-}
-
 // Compact state for the desktop widget and its panel icon.
 app.get("/api/status", async (context) => {
   const active = listEpisodes({ status: "in_progress" }).reverse();
@@ -194,12 +189,12 @@ app.get("/api/status", async (context) => {
     needsYou: waiting.length,
     draftPosts: listPosts({ status: "draft" }).length,
     dashboardUrl: config.WEB_ORIGIN,
-    quota: await cachedQuota(),
+    quota: await cachedGpuQuota(),
   });
 });
 
 app.get("/api/overview", async (context) => {
-  const quota = await cachedQuota();
+  const quota = await cachedGpuQuota();
   return context.json({
     episodes: listEpisodes().slice(0, 30).map(summarize),
     series: listSeries().map((series) => ({
@@ -313,19 +308,37 @@ app.get("/api/episodes/:id", async (context) => context.json(await detail(requir
 app.put("/api/episodes/:id/story", async (context) => {
   const episode = requireEpisode(context.req.param("id"));
   if (getStep(episode.id, "story").status !== "review") throw new HttpError(409, "The story can only be edited while it is in review");
-  // The editors do not send the headline, the places or the objects, so an edit keeps the ones already written.
+  // The editors do not send the headline, the hero's voice, the places or the objects, so an edit keeps the ones already written.
   const body = (await context.req.json()) as { scenes?: Record<string, unknown>[] };
   const before = episode.story;
   const sameScenes = Array.isArray(body.scenes) && body.scenes.length === before?.scenes.length;
   const story = storySchema.parse({
     hook: before?.hook,
+    heroVoice: before?.heroVoice,
     places: before?.places,
     props: before?.props,
     ...body,
     scenes: sameScenes ? body.scenes?.map((scene, index) => ({ place: before?.scenes[index]?.place, props: before?.scenes[index]?.props, ...scene })) : body.scenes,
   });
+  // Every line changed by hand is kept, so later scripts are written and proofread without that mistake.
+  const changed = new Set<number>();
+  const fixes: string[] = [];
+  story.scenes.forEach((scene, index) => {
+    const old = before?.scenes[index];
+    if (!old) return;
+    scene.lines.forEach((line, position) => {
+      const was = old.lines[position]?.text;
+      if (was === undefined || was === line.text) return;
+      changed.add(index + 1);
+      fixes.push(`"${was}" → "${line.text}"`);
+    });
+  });
+  if (sameScenes) addCorrections("edit", fixes);
   saveEpisodeStory(episode.id, story);
   await saveStory(episode.dir, story);
+  // The proofreader's flags on the scenes just edited no longer apply.
+  const flags = getStep(episode.id, "story").meta.flags;
+  if (flags?.length && changed.size) updateStep(episode.id, "story", { meta: { flags: flags.filter((flag) => !changed.has(flag.scene)) } });
   return context.json(await detail(requireEpisode(context.req.param("id"))));
 });
 
@@ -346,6 +359,15 @@ app.put("/api/episodes/:id/scenes/:number", async (context) => {
   saveEpisodeStory(episode.id, story);
   await saveStory(episode.dir, story);
   return context.json(await detail(requireEpisode(context.req.param("id"))));
+});
+
+// Everything the director needs to review a step: what it should be, the server's own findings, and
+// absolute paths of the files to look at.
+app.get("/api/episodes/:id/steps/:step/packet", async (context) => {
+  const episode = requireEpisode(context.req.param("id"));
+  const step = stepNameSchema.parse(context.req.param("step")) as StepName;
+  if (getStep(episode.id, step).status !== "review") throw new HttpError(409, `The ${step} step is not waiting for review`);
+  return context.json(await buildPacket(episode, step, MODEL));
 });
 
 app.post("/api/episodes/:id/steps/:step/approve", async (context) => {
@@ -482,6 +504,15 @@ app.get("/api/analysis/reports", (context) => context.json(listReports(Number(co
 app.post("/api/analysis/refresh", async (context) => {
   await takeReport();
   return context.json(analysis(), 201);
+});
+
+const alertSchema = z.object({ title: z.string().trim().min(1).max(120), message: z.string().trim().min(1).max(1000), click: z.string().max(300).optional() });
+
+// An alert from the director, for what it cannot settle by itself.
+app.post("/api/alerts", async (context) => {
+  const body = alertSchema.parse(await context.req.json());
+  const sent = await alert({ ...body, click: body.click ?? "veogen://", tags: ["warning"], priority: 4 }, { force: true });
+  return context.json({ sent });
 });
 
 app.post("/api/alerts/test", async (context) => {

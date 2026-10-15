@@ -18,7 +18,7 @@ if (pages.length === 0) {
   process.exit(1);
 }
 
-// With several Pages, pass part of the name: bun run facebook-connect عتمة
+// With several Pages, pass part of the name: bun run facebook-connect حواديت
 const wanted = process.argv[2];
 const matches = wanted ? pages.filter((page) => page.name.includes(wanted)) : pages;
 if (matches.length !== 1) {

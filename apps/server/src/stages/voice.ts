@@ -26,8 +26,8 @@ export type WordTiming = z.infer<typeof wordTimingSchema>;
 export type SceneVoice = z.infer<typeof sceneVoiceSchema>;
 
 type Interval = { start: number; end: number };
-// One spoken line and where it sits in the story (scene and line numbers start at 1).
-type ScriptLine = { scene: number; line: number; speaker: string; text: string };
+// One spoken line and where it sits: the chapter folder, then scene and line numbers (from 1).
+type ScriptLine = { dir: string; scene: number; line: number; speaker: string; text: string };
 // One recording: every line it contains is spoken by one of its (one or two) voices.
 export type Take = { name: string; lines: ScriptLine[] };
 
@@ -147,55 +147,67 @@ Return ONLY JSON: {"starts": [seconds, ...]} with exactly ${lines.length} number
   }
 }
 
-function scriptLines(story: Story): ScriptLine[] {
+function scriptLines(dir: string, story: Story): ScriptLine[] {
   return story.scenes.flatMap((scene, sceneIndex) =>
-    scene.lines.map((line, lineIndex) => ({ scene: sceneIndex + 1, line: lineIndex + 1, speaker: line.speaker, text: line.text })),
+    scene.lines.map((line, lineIndex) => ({ dir, scene: sceneIndex + 1, line: lineIndex + 1, speaker: line.speaker, text: line.text })),
   );
 }
 
+// Lines per recording: longer recordings drift, and their line starts can no longer be heard reliably.
+const MAX_LINES_PER_TAKE = 36;
+
 // The voice service takes at most two voices per recording. The main recording holds the narrator and
-// the character with the most lines; any other character gets a recording of their own.
-function planTakes(story: Story): Take[] {
-  const lines = scriptLines(story);
+// the character with the most lines; any other character gets a recording of their own. A recording
+// with too many lines is split into even parts.
+function planTakes(story: Story, lines: ScriptLine[]): Take[] {
   const counts = new Map<string, number>();
-  for (const line of lines) if (!sameVoiceAsNarrator(line.speaker)) counts.set(line.speaker, (counts.get(line.speaker) ?? 0) + 1);
+  for (const line of lines) if (!sameVoiceAsNarrator(story, line.speaker)) counts.set(line.speaker, (counts.get(line.speaker) ?? 0) + 1);
   const others = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([speaker]) => speaker);
   const lead = others[0];
-  const takes: Take[] = [{ name: "main", lines: lines.filter((line) => sameVoiceAsNarrator(line.speaker) || line.speaker === lead) }];
+  const takes: Take[] = [{ name: "main", lines: lines.filter((line) => sameVoiceAsNarrator(story, line.speaker) || line.speaker === lead) }];
   for (const speaker of others.slice(1)) takes.push({ name: speaker, lines: lines.filter((line) => line.speaker === speaker) });
-  return takes.filter((take) => take.lines.length > 0);
+  return takes
+    .filter((take) => take.lines.length > 0)
+    .flatMap((take) => {
+      const parts = Math.ceil(take.lines.length / MAX_LINES_PER_TAKE);
+      if (parts === 1) return [take];
+      const size = Math.ceil(take.lines.length / parts);
+      return Array.from({ length: parts }, (_, index) => ({ name: `${take.name}-${index + 1}`, lines: take.lines.slice(index * size, (index + 1) * size) }));
+    });
 }
 
-// The narrator and the main character speaking in a scene are one person, so one voice.
-function sameVoiceAsNarrator(speaker: string): boolean {
-  return speaker === NARRATOR || speaker === HERO;
+// Older stories have no voice for the main character: they speak in the narrator's, as one person.
+function sameVoiceAsNarrator(story: Story, speaker: string): boolean {
+  return speaker === NARRATOR || (speaker === HERO && !story.heroVoice);
 }
 
 // The name a line is recorded under: lines sharing a voice must share a name in the request.
-function recordingName(speaker: string): string {
-  return sameVoiceAsNarrator(speaker) ? NARRATOR : speaker;
+function recordingName(story: Story, speaker: string): string {
+  return sameVoiceAsNarrator(story, speaker) ? NARRATOR : speaker;
 }
+
+const SPEAK_ONLY = "Natural Egyptian Arabic (Cairo) pronunciation. Speak ONLY the transcript, never these directions.";
 
 function voiceFor(story: Story, speaker: string): { voice: string; style: string } {
   if (speaker === NARRATOR) return { voice: config.GEMINI_VOICE, style: config.VOICE_STYLE };
   if (speaker === HERO) {
     return {
-      voice: config.GEMINI_VOICE,
+      voice: story.heroVoice || config.GEMINI_VOICE,
       style:
-        "The main character of an Egyptian horror story speaking OUT LOUD to another person in the scene: a nervous young man, " +
-        "natural conversational Egyptian Arabic (Cairo), not storytelling. Speak ONLY the transcript, never these directions.",
+        "The main character of an Egyptian children's story, a lively child of about seven, speaking OUT LOUD to someone in the scene: " +
+        `bright, curious and expressive, the way a real child talks, not storytelling. ${SPEAK_ONLY}`,
     };
   }
   const member = story.cast.find((candidate) => candidate.name === speaker);
   if (!member?.voice) throw new Error(`No voice is set for the character "${speaker}"`);
   return {
     voice: member.voice,
-    style: `A character in an Egyptian horror story: ${member.role} Natural Egyptian Arabic (Cairo) pronunciation. Speak ONLY the transcript, never these directions.`,
+    style: `A character in an Egyptian children's story: ${member.role} Warm, friendly and expressive, playful where it fits. ${SPEAK_ONLY}`,
   };
 }
 
 async function recordTake(story: Story, take: Take, audioPath: string, styleNote: string): Promise<string> {
-  const speakers = [...new Set(take.lines.map((line) => recordingName(line.speaker)))];
+  const speakers = [...new Set(take.lines.map((line) => recordingName(story, line.speaker)))];
   const note = styleNote ? ` Extra direction from the producer: ${styleNote}` : "";
   const models = config.GEMINI_TTS_MODELS.split(",").map((model) => model.trim()).filter(Boolean);
 
@@ -212,7 +224,7 @@ async function recordTake(story: Story, take: Take, audioPath: string, styleNote
               { name: second, voice: voiceFor(story, second).voice },
             ],
             lines: take.lines.map((line) => ({
-              speaker: recordingName(line.speaker),
+              speaker: recordingName(story, line.speaker),
               text: line.text,
               style: voiceFor(story, line.speaker).style + note,
             })),
@@ -239,9 +251,10 @@ async function recordTake(story: Story, take: Take, audioPath: string, styleNote
 }
 
 type LinePiece = { duration: number; words: WordTiming[] };
+const pieceKey = (dir: string, scene: number, line: number) => `${dir}:${scene}:${line}`;
 
 // Cuts a recording into its lines and returns each line's length and word timings.
-export async function cutTake(dir: string, take: Take, audioPath: string): Promise<Map<string, LinePiece>> {
+export async function cutTake(take: Take, audioPath: string): Promise<Map<string, LinePiece>> {
   const duration = await mediaDuration(audioPath);
   const silences = await detectSilences(audioPath, duration);
   const texts = take.lines.map((line) => line.text);
@@ -253,7 +266,7 @@ export async function cutTake(dir: string, take: Take, audioPath: string): Promi
   for (const [index, line] of take.lines.entries()) {
     const start = starts[index] ?? 0;
     const end = starts[index + 1] ?? duration;
-    const piecePath = paths.voiceLine(dir, line.scene, line.line);
+    const piecePath = paths.voiceLine(line.dir, line.scene, line.line);
     await mkdir(dirname(piecePath), { recursive: true });
     await ffmpeg(["-i", audioPath, "-ss", start.toFixed(3), "-to", end.toFixed(3), ...MP3, piecePath]);
     const words = estimateWords(tokenize(line.text), speechWithin(silences, start, end)).map((word) => ({
@@ -262,7 +275,7 @@ export async function cutTake(dir: string, take: Take, audioPath: string): Promi
       end: word.end - start,
       speaker: line.speaker,
     }));
-    pieces.set(`${line.scene}:${line.line}`, { duration: await mediaDuration(piecePath), words });
+    pieces.set(pieceKey(line.dir, line.scene, line.line), { duration: await mediaDuration(piecePath), words });
   }
   return pieces;
 }
@@ -300,22 +313,42 @@ export async function runVoice(dir: string, options: { force?: boolean; styleNot
     const existing = await loadExisting(dir, story.scenes.length);
     if (existing) return existing;
   }
+  const pieces = await recordLines(story, scriptLines(dir, story), dir, options.styleNote ?? "");
+  return buildSceneVoices(dir, story, pieces);
+}
 
+// Records several chapters of one story together, so the whole story costs about as many requests as one
+// chapter. The recordings are kept in the first chapter's folder.
+export async function runStoryVoice(dirs: string[], options: { styleNote?: string } = {}): Promise<void> {
+  const stories = await Promise.all(dirs.map((dir) => loadStory(dir)));
+  const first = stories[0];
+  if (!first) return;
+  // Every character of the story, so a voice is found for one who only appears in a later chapter.
+  const cast = [...new Map(stories.flatMap((story) => story.cast).map((member) => [member.name, member])).values()];
+  const lines = dirs.flatMap((dir, index) => scriptLines(dir, stories[index] as Story));
+  const pieces = await recordLines({ ...first, cast }, lines, dirs[0] as string, options.styleNote ?? "");
+  for (const [index, dir] of dirs.entries()) await buildSceneVoices(dir, stories[index] as Story, pieces);
+}
+
+async function recordLines(story: Story, lines: ScriptLine[], takesDir: string, styleNote: string): Promise<Map<string, LinePiece>> {
   const pieces = new Map<string, LinePiece>();
-  for (const take of planTakes(story)) {
-    const takePath = paths.voiceTake(dir, take.name);
-    const model = await recordTake(story, take, takePath, options.styleNote ?? "");
+  for (const take of planTakes(story, lines)) {
+    const takePath = paths.voiceTake(takesDir, take.name);
+    const model = await recordTake(story, take, takePath, styleNote);
     console.log(`${take.name} recording made with ${model} (${take.lines.length} lines)`);
-    for (const [key, piece] of await cutTake(dir, take, takePath)) pieces.set(key, piece);
+    for (const [key, piece] of await cutTake(take, takePath)) pieces.set(key, piece);
   }
+  return pieces;
+}
 
+async function buildSceneVoices(dir: string, story: Story, pieces: Map<string, LinePiece>): Promise<SceneVoice[]> {
   const voices: SceneVoice[] = [];
   for (const [index, scene] of story.scenes.entries()) {
     const number = index + 1;
     const words: WordTiming[] = [];
     let cursor = 0;
     for (const lineNumber of scene.lines.keys()) {
-      const piece = pieces.get(`${number}:${lineNumber + 1}`);
+      const piece = pieces.get(pieceKey(dir, number, lineNumber + 1));
       if (!piece) throw new Error(`Scene ${number} line ${lineNumber + 1} was not recorded`);
       words.push(...piece.words.map((word) => ({ ...word, start: word.start + cursor, end: word.end + cursor })));
       cursor += piece.duration;

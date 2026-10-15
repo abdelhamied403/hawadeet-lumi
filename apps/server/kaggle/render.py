@@ -38,12 +38,12 @@ os.environ["HF_HOME"] = CACHE
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
-IMAGE_W, IMAGE_H = 704, 1280
+IMAGE_W, IMAGE_H = 1280, 704
 
 # fps / max_frames follow what each model was trained on.
 MODELS = {
-    "wan5b": {"width": 704, "height": 1280, "fps": 24, "max_frames": 121, "steps": 3},
-    "wan14b": {"width": 480, "height": 832, "fps": 16, "max_frames": 81, "steps": 4},
+    "wan5b": {"width": 1280, "height": 704, "fps": 24, "max_frames": 121, "steps": 3},
+    "wan14b": {"width": 832, "height": 480, "fps": 16, "max_frames": 81, "steps": 4},
 }
 
 # Each stage runs as its own process (see main), so they share progress through this file.

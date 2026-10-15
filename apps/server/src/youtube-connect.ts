@@ -9,6 +9,8 @@ const REDIRECT = `http://127.0.0.1:${PORT}/callback`;
 // Upload videos, read the channel and its videos' counts, and read watch time for the Analysis tab.
 const SCOPES = [
   "https://www.googleapis.com/auth/youtube.upload",
+  // Playlists: each story's full video and its chapters are kept together in one.
+  "https://www.googleapis.com/auth/youtube",
   "https://www.googleapis.com/auth/youtube.readonly",
   "https://www.googleapis.com/auth/yt-analytics.readonly",
 ];

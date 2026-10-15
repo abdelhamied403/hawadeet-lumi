@@ -1,5 +1,5 @@
 node_modules/
 output/
 .env
-assets/music/*.mp3
-assets/sfx/*.mp3
+assets/music/**/*.mp3
+assets/sfx/**/*.mp3

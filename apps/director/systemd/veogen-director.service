@@ -1,0 +1,17 @@
+# The kids' Veogen director: reviews every step of every chapter with Claude and approves or sends it back.
+# Install:  cp systemd/veogen-director.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#           systemctl --user enable --now veogen-director
+# Logs:     journalctl --user -u veogen-director -f
+[Unit]
+Description=Veogen kids director (Claude reviews every step)
+After=network-online.target veogen-tunnel.service
+
+[Service]
+WorkingDirectory=%h/work/personal/veogen-copy/apps/director
+ExecStart=%h/.bun/bin/bun run src/main.ts
+Restart=always
+RestartSec=30
+Environment=PATH=%h/.local/bin:%h/.bun/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

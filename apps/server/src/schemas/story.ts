@@ -3,8 +3,8 @@ import { z } from "zod";
 // Speaker label for lines told by the storyteller; every other speaker is a cast member's name.
 export const NARRATOR = "Narrator";
 
-// Speaker label for the main character talking out loud inside a scene. Same voice as the narrator,
-// performed as speech to someone, not as storytelling.
+// Speaker label for the main character (a child) talking out loud inside a scene, in the story's
+// `heroVoice`. Older stories have no hero voice and use the narrator's, performed as speech.
 export const HERO = "Hero";
 
 export const lineSchema = z.object({
@@ -18,7 +18,7 @@ export const castMemberSchema = z.object({
   name: z.string().regex(/^[A-Za-z]+$/, "Use letters only, no spaces"),
   nameArabic: z.string().default(""),
   gender: z.enum(["male", "female"]),
-  age: z.enum(["young", "adult", "old"]),
+  age: z.enum(["child", "young", "adult", "old"]),
   // English: who they are and how they sound, used to direct the voice.
   role: z.string().min(1),
   // English: what they look like, used in image descriptions.
@@ -30,6 +30,9 @@ export const castMemberSchema = z.object({
 export const placeSchema = z.object({
   // Short Latin name, used to point a scene at the place (e.g. "Corridor").
   name: z.string().regex(/^[A-Za-z]+$/, "Use letters only, no spaces"),
+  // The everyday Egyptian word for the place, used whenever a line names it. Without it the writer
+  // turns the English name into Arabic letters ("Booth" became "البوظة"). Empty for older series until filled in.
+  nameArabic: z.string().default(""),
   // English: what the place looks like and the state its doors and objects are in, added to every image set there.
   look: z.string().min(1),
 });
@@ -37,6 +40,8 @@ export const placeSchema = z.object({
 export const propSchema = z.object({
   // Short Latin name, used to point a scene at the object (e.g. "Padlock").
   name: z.string().regex(/^[A-Za-z]+$/, "Use letters only, no spaces"),
+  // The everyday Egyptian word for the object, used whenever a line names it. Empty for older series until filled in.
+  nameArabic: z.string().default(""),
   // English: what the object looks like, added to every image it is in.
   look: z.string().min(1),
 });
@@ -78,6 +83,8 @@ export const storySchema = z.object({
   characterSheet: z.string().default(""),
   styleSheet: z.string().default(""),
   seed: z.number().int().default(1234),
+  // The main character's own voice; empty for older stories, where they speak in the narrator's.
+  heroVoice: z.string().default(""),
   // Characters who speak besides the narrator.
   cast: z.array(castMemberSchema).default([]),
   // The places the story happens in, each with one fixed look.
@@ -96,7 +103,7 @@ export function spokenName(name: string): string {
 export function buildImagePrompt(story: Story, scene: Scene): string {
   const looks = scene.shows
     ? scene.shows.map((who) => {
-        if (who === HERO) return story.characterSheet && `The young main character: ${story.characterSheet}`;
+        if (who === HERO) return story.characterSheet && `The main character: ${story.characterSheet}`;
         const member = story.cast.find((candidate) => candidate.name === who);
         return member ? `${spokenName(member.name)}: ${member.look}` : "";
       })
