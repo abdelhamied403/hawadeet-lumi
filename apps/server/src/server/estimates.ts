@@ -6,7 +6,7 @@ const COST: Record<StepName, { start: number; perScene: number }> = {
   story: { start: 180, perScene: 0 },
   voice: { start: 120, perScene: 10 },
   images: { start: 300, perScene: 220 },
-  clips: { start: 600, perScene: 840 },
+  clips: { start: 600, perScene: 1100 },
   video: { start: 60, perScene: 180 },
   publish: { start: 0, perScene: 0 },
 };
