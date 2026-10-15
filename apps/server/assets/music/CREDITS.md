@@ -10,6 +10,5 @@ http://creativecommons.org/licenses/by/4.0/
 
 Cheerful tracks (this folder): Carefree, Easy Lemon, Fluffing a Duck, Life of Riley, Monkeys Spinning Monkeys, Wallpaper
 Calm tracks for bedtime stories (calm/): Dreamer, Gymnopedie No 1
-The horror series' tracks are in horror/, with their own CREDITS.md.
 
 The mp3 files are not in git; download them from https://incompetech.com/music/royalty-free/mp3-royaltyfree/<Track title>.mp3
