@@ -14,6 +14,7 @@ import {
   type JobStatus,
 } from "../services/kaggle";
 import { buildImagePrompt, NARRATOR, type Scene } from "../schemas/story";
+import { withoutWords } from "./motion";
 import { loadSceneVoice } from "./voice";
 
 export const MOTION_MODELS = ["wan5b", "wan14b"] as const;
@@ -99,7 +100,7 @@ export async function pushRender(dir: string, model: MotionModel, options: PushR
     scenes.push({
       index: number,
       imagePrompt: buildImagePrompt(story, scene),
-      motionPrompt: scene.motionPrompt,
+      motionPrompt: withoutWords(scene.motionPrompt),
       seconds: voice.duration + video.sceneTailSeconds + CLIP_MARGIN_SECONDS,
       imageSeed: story.seed + (options.imageSeedBump ?? 0),
     });
