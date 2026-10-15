@@ -2,6 +2,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { config, DATA_DIR, flags, LOG_PATH } from "./config";
 import { review, type Decision } from "./review";
+import { keepAwake, releaseAwake } from "./awake";
 import { download } from "./media";
 import { approveStep, getPacket, getStatus, rejectStep, sendAlert, updateScene, type EpisodeSummary, type StepName } from "./services/veogen";
 
@@ -11,11 +12,14 @@ const HELD_PATH = resolve(DATA_DIR, "director-held.json");
 // A failed step is tried again this many times before it is handed to the owner.
 const FAILURE_RETRIES = 1;
 
-type State = { held: string[]; retried: Record<string, number> };
+// held: steps handed to the owner. retried: failed steps tried again. rejected: how many times the director
+// itself has sent a step back since it last approved it (redos asked for by anyone else do not count).
+type State = { held: string[]; retried: Record<string, number>; rejected: Record<string, number> };
 
 async function loadState(): Promise<State> {
   const file = Bun.file(HELD_PATH);
-  return (await file.exists()) ? ((await file.json()) as State) : { held: [], retried: {} };
+  const saved = (await file.exists()) ? ((await file.json()) as Partial<State>) : {};
+  return { held: saved.held ?? [], retried: saved.retried ?? {}, rejected: saved.rejected ?? {} };
 }
 
 async function saveState(state: State): Promise<void> {
@@ -60,11 +64,17 @@ async function reviewStep(state: State, episode: EpisodeSummary, step: StepName)
   const decision = await review(packet);
   await log({ key, episode: episode.id, chapter: episode.partNumber, step, attempt: packet.attempt, seconds: Math.round((Date.now() - started) / 1000), ...decision });
   console.log(`${decision.approve ? "approved" : "sent back"} ${label(episode, step)}: ${decision.note}`);
-  if (!decision.approve && packet.attempt >= config.MAX_REJECTIONS) {
-    await hold(state, key, `${label(episode, step)} needs you`, `Sent back ${packet.attempt} times and still not right: ${decision.note}`);
+  const counted = `${episode.id}:${step}`;
+  const rejections = state.rejected[counted] ?? 0;
+  if (!decision.approve && rejections >= config.MAX_REJECTIONS) {
+    await hold(state, key, `${label(episode, step)} needs you`, `Sent back ${rejections} times and still not right: ${decision.note}`);
     return;
   }
-  if (!flags.dryRun) await act(episode, step, decision);
+  if (flags.dryRun) return;
+  await act(episode, step, decision);
+  if (decision.approve) delete state.rejected[counted];
+  else state.rejected[counted] = rejections + 1;
+  await saveState(state);
 }
 
 async function retryFailed(state: State, episode: EpisodeSummary, step: StepName): Promise<void> {
@@ -86,6 +96,7 @@ async function retryFailed(state: State, episode: EpisodeSummary, step: StepName
 async function pass(): Promise<void> {
   const state = await loadState();
   const { episodes } = await getStatus();
+  if (!flags.dryRun) await keepAwake(episodes.length > 0);
   // Earlier chapters first, so the GPU queue is fed in story order.
   for (const episode of [...episodes].sort((a, b) => a.seriesId - b.seriesId || a.partNumber - b.partNumber)) {
     for (const step of episode.steps) {
@@ -106,6 +117,13 @@ async function pass(): Promise<void> {
       }
     }
   }
+}
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    releaseAwake();
+    process.exit(0);
+  });
 }
 
 console.log(`director watching ${config.VEOGEN_URL}${flags.dryRun ? " (dry run: nothing is changed)" : ""}`);

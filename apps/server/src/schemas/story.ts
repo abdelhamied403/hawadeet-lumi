@@ -99,7 +99,22 @@ export function spokenName(name: string): string {
   return name.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
-// The full prompt for a scene's image: the moment, the fixed look of the place and of each person in it, then the style.
+// Staging rules added to every picture, for the image model's habits that cost redos: extra people at the
+// edges and in the background, a character drawn twice, clothes moving from one character to another, and
+// lettering. Written as plain statements, since the image model has no negative prompt.
+function stagingRules(scene: Scene): string[] {
+  const names = (scene.shows ?? []).map((who) => (who === HERO ? "the main character" : spokenName(who)));
+  const list = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : (names[0] ?? "");
+  const who = names.length === 0 ? "No people and no animals anywhere in the picture, only the place and its objects" : `Only ${list} ${names.length > 1 ? "are" : "is"} in the picture, ${names.length > 1 ? "each drawn once" : "drawn once"}`;
+  return [
+    `${who}; the edges and background of the frame show only scenery, with any other boats, windows and streets empty`,
+    ...(names.length ? ["Each character wears only their own clothes, and animals are bare"] : []),
+    "No lettering anywhere",
+  ];
+}
+
+// The full prompt for a scene's image: the moment, the fixed look of the place and of each person in it, the
+// staging rules, then the style.
 export function buildImagePrompt(story: Story, scene: Scene): string {
   const looks = scene.shows
     ? scene.shows.map((who) => {
@@ -113,7 +128,7 @@ export function buildImagePrompt(story: Story, scene: Scene): string {
     const prop = story.props.find((candidate) => candidate.name === name);
     return prop ? `The ${spokenName(prop.name).toLowerCase()}: ${prop.look}` : "";
   });
-  return [scene.imagePrompt, place ? `The place: ${place.look}` : "", ...props, ...looks, story.styleSheet]
+  return [scene.imagePrompt, place ? `The place: ${place.look}` : "", ...props, ...looks, ...(scene.shows ? stagingRules(scene) : []), story.styleSheet]
     .filter(Boolean)
     .map((part) => part.trim().replace(/\.$/, ""))
     .join(". ");

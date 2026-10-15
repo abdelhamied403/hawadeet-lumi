@@ -28,6 +28,8 @@ export const seriesBibleSchema = z.object({
   lesson: z.string().default(""),
   // The main character is a child with a voice of their own; older series spoke in the narrator's voice.
   heroGender: z.enum(["male", "female"]).optional(),
+  // The main character's first name in Arabic, kept so later stories do not reuse it; empty in older plans.
+  heroName: z.string().default(""),
   heroVoice: z.string().default(""),
   characterSheet: z.string().min(1),
   styleSheet: z.string().min(1),
@@ -76,11 +78,11 @@ export function assignVoices(cast: CastMember[], heroVoice = ""): CastMember[] {
   });
 }
 
-const CAST_SHAPE = `"cast": [{ "name": "one Latin word used as the speaker label, e.g. Teta or Bisbis", "nameArabic": "the name in Arabic", "gender": "male" | "female", "age": "child" | "young" | "adult" | "old", "role": "ENGLISH, who they are (a person or a talking animal) and how they speak", "look": "ENGLISH, one precise sentence fixing their appearance so they are the same character in every image: for a person their age, build, hair (colour and cut), skin and the exact clothes with their colour; for an animal its kind, size, fur or feather colours and markings, and anything it wears" }]`;
+const CAST_SHAPE = `"cast": [{ "name": "one Latin word used as the speaker label, e.g. Teta or Bisbis", "nameArabic": "the name in Arabic", "gender": "male" | "female", "age": "child" | "young" | "adult" | "old", "role": "ENGLISH, who they are (a person or a talking animal) and how they speak", "look": "ENGLISH, one precise sentence fixing their appearance so they are the same character in every image: for a person their age, build, hair said positively and in full (e.g. thick short black hair covering the top of the head; the image model leaves out hair that is only hinted at and draws a bald head), skin and the exact clothes with their colour; for an animal its kind, size, fur or feather colours and markings, and that it wears nothing unless it truly does (otherwise it borrows the main character's clothes)" }]`;
 
 const PLACES_SHAPE = `"places": [{ "name": "one Latin word used to point a scene at the place, e.g. Garden", "nameArabic": "the everyday Egyptian word a character would say for it, e.g. الجنينة", "look": "ENGLISH, three or four precise sentences fixing what never changes about the place, so it is the same in every image: its size and shape, the walls or landscape (colours), the floor or ground, the furniture, trees or other fixed things, and the light (source and colour). Nothing that changes during the story: who is there and what lies around are left to each scene" }]`;
 
-const PROPS_SHAPE = `"props": [{ "name": "one Latin word used to point a scene at the object, e.g. Kite", "nameArabic": "the everyday Egyptian word a character would say for it, e.g. الطيارة الورق", "look": "ENGLISH, one or two precise sentences fixing the object so it is the same in every image: what it is, its size, material, colours and any mark that makes it recognisable" }]`;
+const PROPS_SHAPE = `"props": [{ "name": "one Latin word used to point a scene at the object, e.g. Kite", "nameArabic": "the everyday Egyptian word a character would say for it, e.g. الطيارة الورق", "look": "ENGLISH, one or two precise sentences fixing the object so it is the same in every image, by its shape, size, material, colours and any mark that makes it recognisable. Never by the name of something bigger it comes from or could be taken for: the image model draws every noun it reads, so 'a fish scale' comes out as a whole fish and 'a bird feather' as a bird. Write 'a small flat round silver disc like a sequin' instead" }]`;
 
 // Fixes the look of the places and recurring objects of a series that was planned without any, in step with what was already published.
 export async function writePlaces(bible: SeriesBible, published: PreviousPart[], stills: Buffer[] = []): Promise<{ places: Place[]; props: Prop[] }> {
@@ -203,8 +205,8 @@ Plan a new story of exactly ${options.parts} chapters.${options.idea ? `\nThe pr
 It is ${STORY_TYPES[storyType]}.
 ${earlier.length ? `
 The channel has already told these stories:
-${earlier.map((bible) => `- ${bible.title}: ${bible.premise}`).join("\n")}
-The new story must feel different to a child who watched those: a different setting, a different main character, different side characters and a different lesson.
+${earlier.map((bible) => `- ${bible.title}: ${bible.premise}${bible.heroName ? ` Main character: ${bible.heroName}.` : ""}${bible.cast.length ? ` Side characters: ${bible.cast.map((member) => `${member.nameArabic || member.name} (${member.role})`).join("; ")}.` : ""}${bible.lesson ? ` Lesson: ${bible.lesson}` : ""}`).join("\n")}
+The new story must feel different to a child who watched those: a different setting, a different main character with a different name, different side characters (not the same kind of animal or relative in the same role) and a different lesson. No name from those stories may be used again.
 ` : ""}
 What makes it work:
 - ONE continuous story with one main character, a child of 6 to 8, and a simple problem that grows a little in every chapter and is happily solved in the last.
@@ -220,7 +222,7 @@ Return ONLY JSON:
   "lesson": "ENGLISH, one short sentence: what a child watching takes away",
   "heroName": "the main character's first name in Arabic",
   "heroGender": "male" | "female",
-  "characterSheet": "ENGLISH, one precise sentence fixing the main character's look (age, build, hair colour and cut, skin, clothes with their colour), reused for every image they are in",
+  "characterSheet": "ENGLISH, one precise sentence fixing the main character's look (age, build, hair colour and cut said in full, skin, clothes with their colour, and any safety gear the story needs, such as a life jacket near water), reused for every image they are in",
   "styleSheet": "${STYLE_SHEET_RULE}",
   "hashtags": ["#حواديت", "#قصص_اطفال", "..."],
   ${CAST_SHAPE},
