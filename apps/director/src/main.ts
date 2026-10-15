@@ -126,9 +126,30 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 
+// After a network change the SSH tunnel can stay up while passing nothing; after a few failed passes in a
+// row it is restarted.
+const TUNNEL_RESTART_AFTER = 3;
+let failedPasses = 0;
+
+async function restartTunnel(): Promise<void> {
+  const restart = Bun.spawn(["systemctl", "--user", "restart", "veogen-tunnel"], { stdout: "ignore", stderr: "ignore" });
+  await restart.exited;
+  console.log("could not reach the server; restarted the tunnel");
+}
+
 console.log(`director watching ${config.VEOGEN_URL}${flags.dryRun ? " (dry run: nothing is changed)" : ""}`);
 for (;;) {
-  await pass().catch((error) => console.error(`pass: ${error instanceof Error ? error.message : error}`));
+  const reached = await pass()
+    .then(() => true)
+    .catch((error) => {
+      console.error(`pass: ${error instanceof Error ? error.message : error}`);
+      return false;
+    });
+  failedPasses = reached ? 0 : failedPasses + 1;
+  if (failedPasses >= TUNNEL_RESTART_AFTER) {
+    failedPasses = 0;
+    await restartTunnel();
+  }
   if (flags.once) break;
   await Bun.sleep(config.POLL_SECONDS * 1000);
 }
