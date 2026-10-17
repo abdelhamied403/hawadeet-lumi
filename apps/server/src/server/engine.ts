@@ -790,9 +790,16 @@ export async function buildFullStory(seriesId: number): Promise<number[]> {
   const series = getSeries(seriesId);
   const parts = finishedParts(seriesId);
   if (!series || parts.length < 2) throw new Error("The full story needs at least two finished chapters");
-  const videos = parts.map((episode) => paths.final(episode.dir, MODEL));
-  for (const [index, file] of videos.entries()) {
-    if (!(await Bun.file(file).exists())) throw new Error(`Part ${parts[index]?.partNumber} has no finished video on the server`);
+  for (const episode of parts) {
+    if (!(await Bun.file(paths.final(episode.dir, MODEL)).exists())) throw new Error(`Part ${episode.partNumber} has no finished video on the server`);
+  }
+  // Each chapter again without its title and opening line, so the film runs on from one chapter to the next.
+  const videos: string[] = [];
+  for (const episode of parts) {
+    const clean = `${episode.dir}/video-${MODEL}-full.mp4`;
+    const meta = getStep(episode.id, "video").meta;
+    await runAssemble(episode.dir, MODEL, { mood: musicMood(episode), musicTrack: meta.musicTrack, musicVolume: meta.musicVolume, sfxVolume: meta.sfxVolume, titles: false, output: clean });
+    videos.push(clean);
   }
   const target = fullStoryPaths(seriesId);
   fullStoryBuilds.add(seriesId);

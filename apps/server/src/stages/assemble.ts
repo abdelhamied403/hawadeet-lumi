@@ -58,6 +58,11 @@ export type AssembleOptions = {
   musicVolume?: number;
   // Sound effect level, 0 to 1.
   sfxVolume?: number;
+  // The chapter's title and opening line over its first scene. Left out of the copy joined into the full
+  // story, where they would interrupt it between chapters; the Shorts keep them.
+  titles?: boolean;
+  // Where the video is written; the chapter's final video when absent.
+  output?: string;
 };
 
 async function buildVideoSegment(clip: string, target: number, output: string): Promise<void> {
@@ -186,7 +191,9 @@ export async function runAssemble(dir: string, model: string, options: AssembleO
   const sparkling = story.scenes.flatMap((scene, index) => (scene.sfx === "sparkle" ? [{ start: starts[index] ?? 0, end: ends[index] ?? 0 }] : []));
   await Bun.write(
     paths.captions(dir),
-    buildAss(buildCaptions(voices, starts, ends), { ...opening, text: story.hook }, { ...opening, text: story.title }, buildSparkles(sparkling)),
+    options.titles === false
+      ? buildAss(buildCaptions(voices, starts, ends), undefined, undefined, buildSparkles(sparkling))
+      : buildAss(buildCaptions(voices, starts, ends), { ...opening, text: story.hook }, { ...opening, text: story.title }, buildSparkles(sparkling)),
   );
 
   const music = await findMusic(dir, options.mood ?? "cheerful", options.musicTrack);
@@ -215,7 +222,7 @@ export async function runAssemble(dir: string, model: string, options: AssembleO
   }
   filters.push(`${mix.join("")}amix=inputs=${mix.length}:duration=first:normalize=0[a]`);
 
-  const output = resolve(paths.final(dir, model));
+  const output = resolve(options.output ?? paths.final(dir, model));
   await ffmpeg(
     [
       ...inputs,

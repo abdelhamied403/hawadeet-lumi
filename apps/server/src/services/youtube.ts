@@ -142,6 +142,54 @@ export async function uploadVideo(payload: UploadVideoPayload): Promise<UploadVi
   }
 }
 
+export type ScheduleVideoPayload = { accessToken: string; videoId: string; publishAt: string | null };
+
+// Moves a private video's public time; null keeps it private with no time, so it never goes public by itself.
+export async function scheduleVideo(payload: ScheduleVideoPayload): Promise<void> {
+  try {
+    await youtubeHttp.put(
+      "/youtube/v3/videos",
+      {
+        id: payload.videoId,
+        status: {
+          privacyStatus: "private",
+          ...(payload.publishAt ? { publishAt: payload.publishAt } : {}),
+          selfDeclaredMadeForKids: true,
+          containsSyntheticMedia: false,
+        },
+      },
+      { params: { part: "status" }, headers: { Authorization: `Bearer ${payload.accessToken}` } },
+    );
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
+export type UpdateVideoTextPayload = { accessToken: string; videoId: string; title: string; description: string; tags?: string[] };
+
+// Rewrites a video's title and description (YouTube needs the category sent again with them).
+export async function updateVideoText(payload: UpdateVideoTextPayload): Promise<void> {
+  try {
+    await youtubeHttp.put(
+      "/youtube/v3/videos",
+      {
+        id: payload.videoId,
+        snippet: {
+          title: payload.title.slice(0, 100),
+          description: payload.description.slice(0, 4900),
+          tags: payload.tags,
+          categoryId: "1",
+          defaultLanguage: "ar",
+          defaultAudioLanguage: "ar",
+        },
+      },
+      { params: { part: "snippet" }, headers: { Authorization: `Bearer ${payload.accessToken}` } },
+    );
+  } catch (error) {
+    throw describeError(error);
+  }
+}
+
 export type CreatePlaylistPayload = { accessToken: string; title: string; description: string };
 
 // A public playlist on the channel; returns its id.
